@@ -10,7 +10,8 @@ export function Login() {
   const { t, lang, setLang } = useSession();
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
-  const [step, setStep] = useState<"email" | "code">("email");
+  const [step, setStep] = useState<"email" | "code" | "password">("email");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -41,6 +42,20 @@ export function Login() {
     const { error: err } = await supabase.auth.verifyOtp({ email, token: code, type: "email" });
     setBusy(false);
     if (err) setError(err.message);
+  }
+
+  // Accounts created with a password in the Supabase dashboard (e.g. for Apple's App Review team).
+  async function signInWithPassword() {
+    const clean = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean) || !password) {
+      setError(t.invalidEmail);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const { error: err } = await supabase.auth.signInWithPassword({ email: clean, password });
+    setBusy(false);
+    if (err) setError(t.wrongPassword);
   }
 
   async function startKiosk() {
@@ -83,6 +98,35 @@ export function Login() {
                 />
                 {error ? <Text style={styles.error}>{error}</Text> : null}
                 <Button variant="primary" big title={t.sendCode} busy={busy} onPress={sendCode} />
+                <Button variant="ghost" title={t.usePassword} onPress={() => { setStep("password"); setError(""); }} />
+              </>
+            ) : step === "password" ? (
+              <>
+                <Text style={styles.label}>{t.email}</Text>
+                <TextInput
+                  style={styles.input}
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  keyboardType="email-address"
+                  textContentType="username"
+                  accessibilityLabel={t.email}
+                />
+                <Text style={styles.label}>{t.password}</Text>
+                <TextInput
+                  style={styles.input}
+                  value={password}
+                  onChangeText={setPassword}
+                  autoCapitalize="none"
+                  secureTextEntry
+                  textContentType="password"
+                  accessibilityLabel={t.password}
+                  onSubmitEditing={signInWithPassword}
+                />
+                {error ? <Text style={styles.error}>{error}</Text> : null}
+                <Button variant="primary" big title={t.verify} busy={busy} onPress={signInWithPassword} />
+                <Button variant="ghost" title={t.useCode} onPress={() => { setStep("email"); setPassword(""); setError(""); }} />
               </>
             ) : (
               <>

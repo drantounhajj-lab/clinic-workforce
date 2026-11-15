@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { TestDb, type TestUser } from "./harness";
 
 // Gatineau clinic and points ~40 m and ~5 km away
@@ -284,5 +285,28 @@ describe("linking logins to invited people", () => {
     await db.as(tony, "update public.persons set email = 'stranger2@example.com' where email = 'marie.copy@example.com'");
     const rows = await db.admin<{ n: number }>("select count(*)::int as n from public.persons where user_id = $1", [marie.id]);
     expect(rows[0].n).toBe(1);
+  });
+});
+
+describe("App Review demo account (supabase/snippets/review-account.sql)", () => {
+  it("creates a separate demo organization the reviewer can use", async () => {
+    const reviewer = await db.createUser("apple.review@example.com", false, { password: true });
+    const sql = readFileSync(new URL("../snippets/review-account.sql", import.meta.url), "utf8").replace("'review@example.com'", "'apple.review@example.com'");
+    await db.admin(sql);
+
+    const me = await db.as<{ first_name: string }>(reviewer, "select first_name from public.persons where user_id = auth.uid()");
+    expect(me).toEqual([{ first_name: "App" }]);
+    // Sees only the demo organization
+    const clinics = await db.as<{ name: string }>(reviewer, "select name from public.locations");
+    expect(clinics.map((c) => c.name)).toEqual(["Demo Clinic"]);
+    expect(await db.as(reviewer, "select * from public.persons where email = 'marie@example.com'")).toHaveLength(0);
+    // Sees published shifts and can punch at the demo clinic once it saves its location there
+    const shifts = await db.as(reviewer, "select id from public.shifts");
+    expect(shifts).toHaveLength(20);
+    const [loc] = await db.as<{ id: string }>(reviewer, "update public.locations set latitude = 37.3349, longitude = -122.009 returning id");
+    const punch = await db.rpc(reviewer, "punch_with_location", [loc.id, 37.335, -122.0091, 10]);
+    expect(punch).toMatchObject({ accepted: true });
+    // Running it twice is refused
+    await expect(db.admin(sql)).rejects.toThrow(/already set up/);
   });
 });

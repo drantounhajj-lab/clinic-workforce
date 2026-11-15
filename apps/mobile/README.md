@@ -53,6 +53,22 @@ You need: an Apple Developer account (US$99/year), a free Expo account (expo.dev
 
 The bundle identifier is `com.drantounhajj.clinicworkforce` in `app.json`.
 
+## Invite staff (TestFlight external testing)
+
+1. App Store Connect → your app → TestFlight → **Test Information**: beta description, feedback email, contact info, privacy policy URL.
+2. **Beta App Review Information**: check "Sign-in required" and give the review account (below).
+3. **External Testing** → **+** → create a group (e.g. "Pilot clinics") → add the build → submit for review (first build of a version only, usually 1–2 days).
+4. Once approved: add staff by email in the group, or **Create Public Link** and share it.
+5. Staff install Apple's TestFlight app, open the invite or link, install Clinic Workforce, then sign in with the email a manager entered for them.
+
+### Review account for Apple
+
+Apple's reviewers can't receive email codes, so they sign in with a password ("Sign in with a password" on the sign-in screen):
+
+1. Supabase → Authentication → Users → Add user → Create new user: a review email, a strong password, **Auto Confirm User** checked.
+2. Edit the email in `supabase/snippets/review-account.sql`, paste the file in Supabase → SQL Editor, Run. It creates a separate demo organization with one clinic and 4 weeks of published shifts; the reviewer can't see your real clinics.
+3. Review notes for Apple: "Employee time clock for clinics. Sign in: tap 'Sign in with a password'. To try punching: Setup → 'Use my location here' saves the demo clinic at your location, then Clock → 'Use my location'."
+
 ## Install on Android
 
 `npx eas-cli@latest build --platform android --profile preview` produces an APK link. Google Play internal testing comes later.
