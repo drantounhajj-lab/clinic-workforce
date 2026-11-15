@@ -11,7 +11,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts",
-    "demo:build": "node apps/schedule-demo/build.mjs"
+    "demo:build": "node apps/schedule-demo/build.mjs && node apps/staff-demo/build.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
