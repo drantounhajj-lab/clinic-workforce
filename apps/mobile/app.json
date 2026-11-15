@@ -61,6 +61,12 @@
       ],
       "expo-localization"
     ],
-    "scheme": "clinicworkforce"
+    "scheme": "clinicworkforce",
+    "owner": "edelics-team",
+    "extra": {
+      "eas": {
+        "projectId": "a911daf7-a120-4206-9291-8cea2606cc67"
+      }
+    }
   }
 }
