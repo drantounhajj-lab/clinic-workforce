@@ -22,10 +22,11 @@
   "include": [
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
-    "packages/db/drizzle.config.ts",
     "vitest.config.ts",
     "apps/*/src/**/*.ts",
-    "apps/*/src/**/*.tsx"
+    "apps/*/src/**/*.tsx",
+    "supabase/tests/**/*.ts",
+    "vitest.db.config.ts"
   ],
   "exclude": [
     "apps/mobile",

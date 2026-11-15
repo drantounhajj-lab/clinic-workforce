@@ -7,7 +7,8 @@ Workforce and HR platform for healthcare clinics: scheduling, time clock, timesh
 | Path | What it is |
 |---|---|
 | `docs/ARCHITECTURE.md` | Stack, components, hosting, punch-in design, security, AI usage |
-| `packages/db` | Database schema (Drizzle ORM, PostgreSQL) and SQL migration |
+| `supabase/migrations` | Database (Supabase / PostgreSQL, Canada region): tables, row-level security per role, server-side punch checks (zone, Wi-Fi, iPad code, PIN), kiosk pairing, invitations. Deployed automatically when merged to `main` |
+| `supabase/tests` | Permission and punch tests on a local PostgreSQL (`npm run test:db`) |
 | `packages/rules` | Labour rules engine: overlaps, overtime (QC 40 h / ON 44 h), weekly rest, meal breaks, Quebec 5-day notice, availability, allowed clinics, expired licences, min/max hours |
 | `packages/timeclock` | Punch decisions: early-punch limit, geofence, clinic Wi-Fi, fake GPS, offline, rotating QR code; plain-language punch fixes |
 | `packages/sample-data` | Fictional clinics, companies, staff and schedules used by the demos and the app |
@@ -21,9 +22,9 @@ Requires Node.js 22+.
 
 ```bash
 npm install
-npm test            # runs all tests (database tests use an in-memory Postgres)
+npm test            # logic tests (rules, time clock)
+npm run test:db     # database permission and punch tests (starts a local PostgreSQL)
 npm run typecheck
-npm run db:generate # regenerate the SQL migration after editing schema.ts
 npm run demo:build  # build both web demos into apps/*/dist
 ```
 

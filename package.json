@@ -12,21 +12,21 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts",
-    "demo:build": "node apps/schedule-demo/build.mjs && node apps/staff-demo/build.mjs"
+    "demo:build": "node apps/schedule-demo/build.mjs && node apps/staff-demo/build.mjs",
+    "test:db": "vitest run --config vitest.db.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
-    "drizzle-kit": "^0.31.11",
+    "embedded-postgres": "^18.6.0-beta.19",
     "esbuild": "^0.25.12",
+    "pg": "^8.23.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.3.16",
-    "drizzle-orm": "^0.44.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   }

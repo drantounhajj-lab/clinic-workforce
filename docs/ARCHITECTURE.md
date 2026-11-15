@@ -69,7 +69,7 @@ Time-off policy → Time-off balance → Time-off request
 Credential type (configurable per profession) → Credential (per person, expiry)
 ```
 
-Full definitions: `packages/db/src/schema.ts`.
+Source of truth: `supabase/migrations/` (Supabase, region Canada Central). Every table has row-level security; punches are created only through server functions (`punch_with_location`, `punch_with_qr`, `kiosk_punch`) that apply the zone, Wi-Fi, clinic-code, PIN and schedule checks on the server.
 
 Key rules encoded in the model:
 - Every table carries `account_id` for tenant isolation (enforced with Postgres row-level security in the API).
