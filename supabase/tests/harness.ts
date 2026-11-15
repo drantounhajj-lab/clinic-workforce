@@ -18,6 +18,8 @@ create table auth.users (
   id uuid primary key default gen_random_uuid(),
   email text,
   is_anonymous boolean not null default false,
+  email_confirmed_at timestamptz,
+  encrypted_password varchar(255),
   created_at timestamptz not null default now()
 );
 create function auth.uid() returns uuid language sql stable as $$
@@ -80,9 +82,16 @@ export class TestDb {
     await this.pgServer.stop();
   }
 
-  /** Create a login, as Supabase Auth would when someone signs in for the first time. */
-  async createUser(email: string | null, anonymous = false): Promise<TestUser> {
-    const { rows } = await this.client.query("insert into auth.users (email, is_anonymous) values ($1, $2) returning id", [email, anonymous]);
+  /**
+   * Create a login, as Supabase Auth would when someone signs in for the first time.
+   * By default the email is confirmed (the person typed the code) and there is no password.
+   */
+  async createUser(email: string | null, anonymous = false, opts: { confirmed?: boolean; password?: boolean } = {}): Promise<TestUser> {
+    const confirmed = !anonymous && email !== null && opts.confirmed !== false;
+    const { rows } = await this.client.query(
+      "insert into auth.users (email, is_anonymous, email_confirmed_at, encrypted_password) values ($1, $2, $3, $4) returning id",
+      [email, anonymous, confirmed ? new Date() : null, opts.password ? "$2a$10$abcdefghijklmnopqrstuv" : ""],
+    );
     return { id: rows[0].id, email, anonymous };
   }
 

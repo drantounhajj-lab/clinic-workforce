@@ -252,3 +252,37 @@ describe("clinic iPad", () => {
     await expect(db.as(tony, "select * from app.location_secrets")).rejects.toThrow(/permission denied/);
   });
 });
+
+describe("linking logins to invited people", () => {
+  const linkedUser = async (email: string) =>
+    (await db.admin<{ user_id: string | null }>("select user_id from public.persons where email = $1", [email]))[0]?.user_id ?? null;
+
+  it("links only once the email code is confirmed", async () => {
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Nadia', 'Roy', 'nadia@example.com')");
+    const nadia = await db.createUser("nadia@example.com", false, { confirmed: false });
+    expect(await linkedUser("nadia@example.com")).toBeNull();
+    await db.admin("update auth.users set email_confirmed_at = now() where id = $1", [nadia.id]);
+    expect(await linkedUser("nadia@example.com")).toBe(nadia.id);
+  });
+
+  it("never links a login created with a password", async () => {
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Paul', 'Roy', 'paul@example.com')");
+    const squatter = await db.createUser("paul@example.com", false, { confirmed: false, password: true });
+    await db.admin("update auth.users set email_confirmed_at = now() where id = $1", [squatter.id]);
+    expect(await linkedUser("paul@example.com")).toBeNull();
+  });
+
+  it("links someone who signed in before a manager added them", async () => {
+    const early = await db.createUser("early@example.com");
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Eve', 'Early', ' Early@Example.com ')");
+    expect(await linkedUser("early@example.com")).toBe(early.id);
+    expect(await db.as(early, "select first_name from public.persons where user_id = auth.uid()")).toEqual([{ first_name: "Eve" }]);
+  });
+
+  it("does not move a login that already belongs to someone", async () => {
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Copy', 'Marie', 'marie.copy@example.com')");
+    await db.as(tony, "update public.persons set email = 'stranger2@example.com' where email = 'marie.copy@example.com'");
+    const rows = await db.admin<{ n: number }>("select count(*)::int as n from public.persons where user_id = $1", [marie.id]);
+    expect(rows[0].n).toBe(1);
+  });
+});
