@@ -1,5 +1,5 @@
 import type { PunchDecision } from "@clinic-workforce/timeclock";
-import type { RoleKey } from "../../schedule-demo/src/data";
+import type { RoleKey } from "@clinic-workforce/sample-data";
 
 export type Lang = "fr" | "en";
 

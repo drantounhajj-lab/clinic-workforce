@@ -1,5 +1,5 @@
 import type { Issue } from "@clinic-workforce/rules";
-import type { RoleKey } from "./data";
+import type { RoleKey } from "@clinic-workforce/sample-data";
 
 export type Lang = "fr" | "en";
 

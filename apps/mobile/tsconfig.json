@@ -1,0 +1,12 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@clinic-workforce/rules": ["../../packages/rules/src/index.ts"],
+      "@clinic-workforce/timeclock": ["../../packages/timeclock/src/index.ts"],
+      "@clinic-workforce/sample-data": ["../../packages/sample-data/src/index.ts"]
+    }
+  },
+  "include": ["index.ts", "src/**/*.ts", "src/**/*.tsx"]
+}

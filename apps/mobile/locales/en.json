@@ -1,0 +1,5 @@
+{
+  "CFBundleDisplayName": "Clinic Workforce",
+  "NSLocationWhenInUseUsageDescription": "Your location is checked only when you punch in or out, to confirm you are at the clinic.",
+  "NSCameraUsageDescription": "The camera scans the clinic code on the iPad when you punch in or out."
+}

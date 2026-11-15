@@ -20,7 +20,7 @@ import {
   persons,
   seedShifts,
   TZ,
-} from "./data";
+} from "@clinic-workforce/sample-data";
 import { formatDate, hours, issueMessage, type Lang, strings, type Strings } from "./i18n";
 
 // ---------- State ----------

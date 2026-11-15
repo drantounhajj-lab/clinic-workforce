@@ -4,6 +4,8 @@ import {
   evaluatePunch,
   isValidRotatingCode,
   parsePunchFix,
+  parseQrPayload,
+  qrPayload,
   type PunchLocation,
   rotatingCode,
 } from "../src";
@@ -109,5 +111,14 @@ describe("parsePunchFix", () => {
 
   it("returns null when there is no time", () => {
     expect(parsePunchFix("I forgot to punch out", today)).toBeNull();
+  });
+});
+
+describe("QR payload", () => {
+  it("round-trips a clinic code and rejects other QR codes", () => {
+    const code = rotatingCode(clinic, new Date("2027-01-04T13:00:00Z"));
+    expect(parseQrPayload(qrPayload("gatineau", code))).toEqual({ locationId: "gatineau", code });
+    expect(parseQrPayload("https://example.com")).toBeNull();
+    expect(parseQrPayload("cw1:gatineau:abc")).toBeNull();
   });
 });

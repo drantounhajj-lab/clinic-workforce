@@ -5,7 +5,9 @@
   "description": "Workforce and HR platform for healthcare clinics",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/schedule-demo",
+    "apps/staff-demo"
   ],
   "scripts": {
     "test": "vitest run",

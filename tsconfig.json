@@ -26,5 +26,9 @@
     "vitest.config.ts",
     "apps/*/src/**/*.ts",
     "apps/*/src/**/*.tsx"
+  ],
+  "exclude": [
+    "apps/mobile",
+    "**/node_modules"
   ]
 }

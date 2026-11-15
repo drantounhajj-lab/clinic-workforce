@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Clinic Workforce",
+    "slug": "clinic-workforce",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F3F5F7"
+    },
+    "locales": {
+      "en": "./locales/en.json",
+      "fr": "./locales/fr.json"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.drantounhajj.clinicworkforce",
+      "entitlements": {
+        "com.apple.developer.networking.wifi-info": true
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleAllowMixedLocalizations": true
+      }
+    },
+    "android": {
+      "package": "com.drantounhajj.clinicworkforce",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_WIFI_STATE",
+        "CAMERA"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#E3F1F3",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Your location is checked only when you punch in or out, to confirm you are at the clinic."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "The camera scans the clinic code on the iPad when you punch in or out.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      "expo-localization"
+    ],
+    "scheme": "clinicworkforce"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "CFBundleDisplayName": "Clinic Workforce",
+  "NSLocationWhenInUseUsageDescription": "Votre position est vérifiée seulement quand vous pointez, pour confirmer que vous êtes à la clinique.",
+  "NSCameraUsageDescription": "La caméra scanne le code de la clinique affiché sur l'iPad quand vous pointez."
+}

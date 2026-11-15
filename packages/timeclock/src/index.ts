@@ -91,6 +91,17 @@ export function isValidRotatingCode(location: Pick<PunchLocation, "id" | "qrSecr
   return token === codeForWindow(location, window) || token === codeForWindow(location, window - 1);
 }
 
+/** Text encoded in the QR code on the clinic iPad: "cw1:<clinicId>:<code>". */
+export function qrPayload(locationId: string, code: string): string {
+  return `cw1:${locationId}:${code}`;
+}
+
+/** Reads a scanned QR text. Returns null for anything that isn't a clinic code. */
+export function parseQrPayload(text: string): { locationId: string; code: string } | null {
+  const m = /^cw1:([a-z0-9-]{1,64}):([A-Z2-9]{6})$/.exec(text.trim());
+  return m ? { locationId: m[1], code: m[2] } : null;
+}
+
 export function evaluatePunch(p: PunchAttempt): PunchDecision {
   const flags: PunchFlag[] = [];
 

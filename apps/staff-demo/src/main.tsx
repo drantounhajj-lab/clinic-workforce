@@ -19,7 +19,7 @@ import {
   persons,
   seedShifts,
   TZ,
-} from "../../schedule-demo/src/data";
+} from "@clinic-workforce/sample-data";
 import { decisionMessage, type Lang, strings, type Strings } from "./i18n";
 
 // ---------- Demo setup ----------
