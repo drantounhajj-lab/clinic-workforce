@@ -1,0 +1,25 @@
+{
+  "name": "clinic-workforce",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workforce and HR platform for healthcare clinics",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.16",
+    "drizzle-orm": "^0.44.7"
+  }
+}
