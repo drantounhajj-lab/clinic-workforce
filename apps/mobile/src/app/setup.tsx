@@ -1,61 +1,76 @@
 import NetInfo, { NetInfoStateType } from "@react-native-community/netinfo";
-import { clinics } from "@clinic-workforce/sample-data";
 import * as Location from "expo-location";
-import { router } from "expo-router";
-import { useState } from "react";
-import { ScrollView, StyleSheet, Switch, Text, View } from "react-native";
-import { personById, punchLocationFor } from "../clinics";
-import { PersonPicker } from "../components/PersonPicker";
+import { useEffect, useState } from "react";
+import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button, Card, Label, Muted, Segmented } from "../components/ui";
-import { useSettings } from "../settings";
-import { colors, space } from "../theme";
+import { useSession } from "../session";
+import { supabase } from "../supabase";
+import { colors, radius, space } from "../theme";
 
 export default function SetupScreen() {
-  const { settings, t, ready, update, setOverride } = useSettings();
-  const [picking, setPicking] = useState(false);
-  const [messages, setMessages] = useState<Record<string, string>>({});
+  const { t, lang, setLang, me, session, locations, managesLocation, reload } = useSession();
+  const [hasPin, setHasPin] = useState<boolean | null>(null);
+  const [pin, setPin] = useState("");
+  const [pinMsg, setPinMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  if (!ready) return null;
-  const person = personById(settings.personId);
-  const say = (clinicId: string, text: string) => setMessages((m) => ({ ...m, [clinicId]: text }));
+  const [messages, setMessages] = useState<Record<string, string>>({});
+  const managed = locations.filter(managesLocation);
 
-  async function saveLocationHere(clinicId: string) {
-    setBusy(`${clinicId}-loc`);
+  useEffect(() => {
+    supabase.rpc("has_pin").then(({ data }) => setHasPin(data === true));
+  }, []);
+
+  const say = (id: string, text: string) => setMessages((m) => ({ ...m, [id]: text }));
+
+  async function savePin() {
+    setPinMsg(null);
+    const { data, error } = await supabase.rpc("set_my_pin", { p_pin: pin });
+    if (error) setPinMsg({ ok: false, text: error.message });
+    else if (!data?.ok) setPinMsg({ ok: false, text: t.pinErrors[data?.reason] ?? t.error });
+    else {
+      setPinMsg({ ok: true, text: t.pinSet });
+      setHasPin(true);
+      setPin("");
+    }
+  }
+
+  async function saveLocationHere(locationId: string) {
+    setBusy(`${locationId}-loc`);
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
-        say(clinicId, t.locationDenied);
+        say(locationId, t.locationDenied);
         return;
       }
       const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest });
-      setOverride(clinicId, { latitude: pos.coords.latitude, longitude: pos.coords.longitude });
-      say(clinicId, `${t.saved} ±${Math.round(pos.coords.accuracy ?? 0)} m`);
+      const { error } = await supabase.from("locations").update({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }).eq("id", locationId);
+      say(locationId, error ? error.message : `${t.saved} ±${Math.round(pos.coords.accuracy ?? 0)} m`);
+      if (!error) await reload();
     } catch {
-      say(clinicId, t.reasons.no_position);
+      say(locationId, t.error);
     } finally {
       setBusy(null);
     }
   }
 
-  async function addWifi(clinicId: string) {
-    setBusy(`${clinicId}-wifi`);
+  async function addWifi(locationId: string) {
+    setBusy(`${locationId}-wifi`);
     try {
       await Location.requestForegroundPermissionsAsync();
       const net = await NetInfo.fetch();
       if (net.type !== NetInfoStateType.wifi) {
-        say(clinicId, t.notOnWifi);
+        say(locationId, t.notOnWifi);
         return;
       }
       const bssid = net.details.bssid?.toLowerCase();
       if (!bssid) {
-        say(clinicId, t.wifiUnreadable);
+        say(locationId, t.wifiUnreadable);
         return;
       }
-      const current = settings.clinicOverrides[clinicId] ?? {};
-      const wifiBssids = [...new Set([...(current.wifiBssids ?? []), bssid])];
-      const wifiNames = [...new Set([...(current.wifiNames ?? []), net.details.ssid ?? bssid])];
-      setOverride(clinicId, { wifiBssids, wifiNames });
-      say(clinicId, `${t.saved} ${net.details.ssid ?? ""}`.trim());
+      const { error } = await supabase
+        .from("location_wifi")
+        .upsert({ location_id: locationId, ssid: net.details.ssid ?? null, bssid }, { onConflict: "location_id,bssid", ignoreDuplicates: true });
+      say(locationId, error ? error.message : `${t.saved} ${net.details.ssid ?? ""}`.trim());
     } finally {
       setBusy(null);
     }
@@ -70,88 +85,67 @@ export default function SetupScreen() {
             { value: "fr", label: "Français" },
             { value: "en", label: "English" },
           ]}
-          value={settings.lang}
-          onChange={(lang) => update({ lang })}
+          value={lang}
+          onChange={setLang}
         />
       </Card>
 
-      {person && !picking ? (
+      <Card>
+        <Label>{t.account}</Label>
+        <Text style={styles.name}>
+          {me?.first_name} {me?.last_name}
+        </Text>
+        <Muted>{session?.user.email}</Muted>
+        <Button title={t.signOut} onPress={() => supabase.auth.signOut()} />
+      </Card>
+
+      <Card>
+        <Label>{t.pinTitle}</Label>
+        <Muted small>{t.pinHint}</Muted>
+        <Muted>{hasPin ? t.pinSet : t.pinMissing}</Muted>
+        <TextInput
+          style={styles.input}
+          value={pin}
+          onChangeText={(v) => setPin(v.replace(/\D/g, "").slice(0, 6))}
+          keyboardType="number-pad"
+          secureTextEntry
+          placeholder={t.newPin}
+          accessibilityLabel={t.newPin}
+        />
+        <Button variant="primary" title={t.savePin} onPress={savePin} />
+        {pinMsg && <Text style={{ color: pinMsg.ok ? colors.ok : colors.error }}>{pinMsg.text}</Text>}
+      </Card>
+
+      {managed.length > 0 && (
         <Card>
-          <Label>{t.me}</Label>
-          <Text style={styles.name}>{person.name}</Text>
-          <Muted>{t.roles[person.role]}</Muted>
-          <Button title={t.change} onPress={() => setPicking(true)} />
-        </Card>
-      ) : (
-        <PersonPicker onPicked={() => setPicking(false)} />
-      )}
-
-      <Card>
-        <Label>{t.testing}</Label>
-        <View style={styles.switchRow}>
-          <Text style={styles.switchLabel}>{t.ignoreSchedule}</Text>
-          <Switch
-            value={settings.ignoreSchedule}
-            onValueChange={(v) => update({ ignoreSchedule: v })}
-            trackColor={{ true: colors.accent, false: colors.line }}
-            accessibilityLabel={t.ignoreSchedule}
-          />
-        </View>
-        <Muted small>{t.ignoreScheduleHint}</Muted>
-      </Card>
-
-      <Card>
-        <Label>{t.clinicsTitle}</Label>
-        <Muted small>{t.clinicsHint}</Muted>
-        {clinics.map((c) => {
-          const o = settings.clinicOverrides[c.id];
-          const loc = punchLocationFor(c.id, settings.clinicOverrides);
-          return (
-            <View key={c.id} style={styles.clinic}>
+          <Label>{t.managerTools}</Label>
+          <Muted small>{t.managerHint}</Muted>
+          {managed.map((l) => (
+            <View key={l.id} style={styles.clinic}>
               <Text style={styles.clinicName}>
-                {c.name} · {c.province}
+                {l.name} · {l.province}
               </Text>
-              <Muted small>
-                {o?.latitude !== undefined ? t.savedLocation(loc.latitude.toFixed(5), loc.longitude.toFixed(5)) : t.sampleLocation}
-              </Muted>
-              <Muted small>
-                {t.wifiList(o?.wifiBssids?.length ?? 0)}
-                {o?.wifiNames?.length ? ` (${o.wifiNames.join(", ")})` : ""}
-              </Muted>
-              <View style={styles.radiusRow}>
-                <Text style={styles.small}>{t.radius}</Text>
-                <View style={{ flex: 1 }}>
-                  <Segmented
-                    options={[100, 150, 250].map((r) => ({ value: String(r), label: `${r} m` }))}
-                    value={String(loc.geofenceRadiusM)}
-                    onChange={(v) => setOverride(c.id, { radiusM: Number(v) })}
-                  />
-                </View>
-              </View>
-              <View style={styles.buttons}>
-                <Button title={t.useHere} busy={busy === `${c.id}-loc`} onPress={() => saveLocationHere(c.id)} />
-                <Button title={t.addWifi} busy={busy === `${c.id}-wifi`} onPress={() => addWifi(c.id)} />
-                {o && <Button variant="ghost" title={t.resetClinic} onPress={() => setOverride(c.id, null)} />}
-              </View>
-              {messages[c.id] && <Muted small>{messages[c.id]}</Muted>}
+              <Muted small>{l.latitude != null ? t.locationSet(l.latitude.toFixed(5), (l.longitude ?? 0).toFixed(5)) : t.locationUnset}</Muted>
+              <Button title={t.saveLocationHere} busy={busy === `${l.id}-loc`} onPress={() => saveLocationHere(l.id)} />
+              <Button title={t.addWifi} busy={busy === `${l.id}-wifi`} onPress={() => addWifi(l.id)} />
+              {messages[l.id] ? <Muted small>{messages[l.id]}</Muted> : null}
             </View>
-          );
-        })}
-      </Card>
+          ))}
+        </Card>
+      )}
 
       <Card>
         <Label>{t.kioskTitle}</Label>
         <Muted small>{t.kioskHint}</Muted>
-        <Button variant="dark" title={t.openKiosk} onPress={() => router.push("/kiosk")} />
-      </Card>
-
-      {person && (
         <Button
-          variant="ghost"
-          title={t.clearPunches}
-          onPress={() => update({ punches: settings.punches.filter((p) => p.personId !== person.id) })}
+          variant="dark"
+          title={t.setUpKiosk}
+          onPress={async () => {
+            await supabase.auth.signOut();
+            await supabase.auth.signInAnonymously();
+          }}
         />
-      )}
+      </Card>
     </ScrollView>
   );
 }
@@ -159,11 +153,7 @@ export default function SetupScreen() {
 const styles = StyleSheet.create({
   page: { padding: space.md, gap: space.md, paddingBottom: space.xl * 2 },
   name: { fontSize: 18, fontWeight: "600", color: colors.ink },
-  switchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space.md },
-  switchLabel: { flex: 1, fontSize: 15, color: colors.ink },
-  clinic: { borderTopWidth: 1, borderTopColor: colors.line, paddingTop: space.md, marginTop: space.sm, gap: space.xs },
+  input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, paddingHorizontal: space.md, minHeight: 46, fontSize: 18, color: colors.ink, letterSpacing: 4 },
+  clinic: { borderTopWidth: 1, borderTopColor: colors.line, paddingTop: space.md, marginTop: space.sm, gap: space.sm },
   clinicName: { fontSize: 16, fontWeight: "600", color: colors.ink },
-  radiusRow: { flexDirection: "row", alignItems: "center", gap: space.sm, marginTop: space.xs },
-  small: { fontSize: 13, color: colors.muted },
-  buttons: { gap: space.sm, marginTop: space.xs },
 });

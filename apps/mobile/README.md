@@ -1,17 +1,25 @@
 # Clinic Workforce — mobile app (iPhone, Android, iPad kiosk)
 
-Expo / React Native app, SDK 57. Version 0.1: punch-in tests at the clinics, with sample staff and schedules. Nothing is sent to a server yet; punches stay on each device.
+Expo / React Native app, SDK 57. Version 0.2: connected to the Supabase backend. Staff sign in with an email code, see their published shifts, and punch in. Every punch is checked and stored on the server.
 
 ## What it does
 
-- **Clock in / out by location:** real GPS, checked against the clinic's zone (100, 150 or 250 m). If the phone is on a registered clinic Wi-Fi, an out-of-zone GPS reading is still accepted, with a flag. Fake-location apps are refused (Android detects them; iOS detection is limited).
-- **Clock in / out by QR:** the clinic iPad runs this same app in kiosk mode and shows a QR code that changes every 30 seconds. Staff scan it with their phone. A photo of an old code is refused.
-- **Kiosk PIN pad** on the iPad.
-- **Schedule** with confirm / decline (sample data).
-- **Setup:** pick who you are (until logins exist), save each clinic's real location and Wi-Fi while standing inside it, choose the zone size, start kiosk mode.
-- French and English (follows the phone's language; can be changed in Setup).
+- **Sign in with an email code.** No passwords and no "pick who you are". Only people a manager added (in the manager web page) can use the app; anyone else sees "not invited".
+- **Clock in / out by location:** phone GPS sent to the server, which checks the clinic's zone and refuses fake-location apps. If the phone is on a registered clinic Wi-Fi, an out-of-zone reading is still accepted, with a flag. Too early before a shift is refused.
+- **Clock in / out by QR:** the clinic iPad shows a code that changes every 30 seconds, signed by the server. Staff scan it from the Clock screen.
+- **Schedule:** published shifts for the clinics you work at, with confirm / decline.
+- **Setup:** language, sign out, your personal 4–6 digit PIN for the clinic iPad.
+- **Manager tools** (clinic managers and owners only): save a clinic's real location and its Wi-Fi while standing inside it.
+- **Clinic iPad (kiosk):** "Set up this device as a clinic iPad" on the sign-in screen shows a pairing code. A manager enters it in the manager web page (Kiosks) to attach the iPad to a clinic. The iPad then shows the rotating QR code and a PIN pad. Hold the clinic name for 3 seconds to leave kiosk mode.
+- French and English.
 
-Shared logic comes from `../../packages` (time clock checks, labour rules, sample data) through `metro.config.js`.
+Shared logic comes from `../../packages` (time clock, labour rules) through `metro.config.js`.
+
+## Backend settings this app needs (Supabase dashboard)
+
+1. Authentication → Sign In / Providers → **Allow anonymous sign-ins: on** (used only by the clinic iPads).
+2. Authentication → Emails → **Magic Link** template body: `<p>Votre code / Your code: <strong>{{ .Token }}</strong></p>` so the email shows a 6-digit code.
+3. Before inviting staff outside your Supabase team: Authentication → Emails → **SMTP settings** with a real email provider. The built-in sender only delivers to team members and is rate-limited.
 
 ## Develop
 
@@ -27,7 +35,7 @@ This app uses native modules (camera, location, Wi-Fi info), so it needs a devel
 
 ## Install on iPhones with TestFlight
 
-You need: an Apple Developer account (US$99/year), a free Expo account (expo.dev), Node.js 22+ on your computer. No Mac needed: Expo builds the app in the cloud.
+You need: an Apple Developer account (US$99/year), a free Expo account (expo.dev), Node.js 22+ on your computer. Expo builds the app in the cloud.
 
 1. Get the code and install packages:
    ```bash
@@ -35,29 +43,21 @@ You need: an Apple Developer account (US$99/year), a free Expo account (expo.dev
    cd clinic-workforce/apps/mobile
    npm install
    ```
+   Already have it? `cd clinic-workforce && git pull && cd apps/mobile && npm install`
 2. Log in to Expo: `npx eas-cli@latest login`
-3. Link the project the first time: `npx eas-cli@latest init`
-4. Build for iPhone: `npx eas-cli@latest build --platform ios --profile production`
-   EAS asks for your Apple Developer login and creates the certificates for you.
-5. Send it to TestFlight: `npx eas-cli@latest submit --platform ios --latest`
-6. In App Store Connect → TestFlight, add testers by email. Internal testers (people on your App Store Connect team) get it right away; external testers need a short Apple beta review first.
+3. First time only: `npx eas-cli@latest init`
+4. Build: `npx eas-cli@latest build --platform ios --profile production`
+5. Send to TestFlight: `npx eas-cli@latest submit --platform ios --latest`
+6. In App Store Connect → TestFlight, add testers by email. Internal testers get it right away; external testers need a short Apple beta review first.
 7. Testers install Apple's TestFlight app, accept the invite, then install Clinic Workforce.
 
-The bundle identifier is `com.drantounhajj.clinicworkforce` in `app.json`. Change it before the first build if you want a different one; it can't be changed in the App Store afterwards.
+The bundle identifier is `com.drantounhajj.clinicworkforce` in `app.json`.
 
 ## Install on Android
 
-`npx eas-cli@latest build --platform android --profile preview` produces an APK link. Staff open it on their phone to install (they may need to allow installs from that source). Google Play internal testing comes later.
-
-## Testing at the clinics
-
-1. On each phone: Setup → pick the employee.
-2. Once per clinic, on one phone standing inside the clinic: Setup → "Use my location here", then "Add current Wi-Fi". Repeat on other phones (settings are per device until the backend exists).
-3. Try clocking in inside, in the parking lot and across the street to tune the zone size.
-4. On the iPad: Setup → "Start kiosk mode". Staff scan its code from the Clock screen. Hold the clinic name for 2 seconds to exit.
+`npx eas-cli@latest build --platform android --profile preview` produces an APK link. Google Play internal testing comes later.
 
 ## Not yet
 
-- Server, logins, real schedules: punches stay on the device.
-- QR codes are signed with a demo secret in the app; the server will sign them.
+- Offline punch queue (today the app says "no connection" and does not punch).
 - Photo at punch, NFC, availability and time-off screens.

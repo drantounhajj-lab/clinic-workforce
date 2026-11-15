@@ -1,131 +1,104 @@
 import NetInfo, { NetInfoStateType } from "@react-native-community/netinfo";
-import { evaluatePunch, parseQrPayload, type PunchDecision } from "@clinic-workforce/timeclock";
+import { parseQrPayload } from "@clinic-workforce/timeclock";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
-import { useRef, useState } from "react";
-import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Modal, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import {
-  clinicById,
-  fmtDay,
-  fmtDistance,
-  fmtTime,
-  myClinicIds,
-  myShifts,
-  personById,
-  punchLocationFor,
-  shiftEnd,
-  shiftStart,
-} from "../clinics";
-import { PersonPicker } from "../components/PersonPicker";
 import { Button, Card, Label, Muted, Result, Segmented, Tag } from "../components/ui";
-import { useSettings } from "../settings";
-import { colors, mono, space } from "../theme";
+import { fmtDay, fmtDistance, fmtTime } from "../format";
+import { reasonText } from "../i18n";
+import { useMyClinics, useSession } from "../session";
+import { type Punch, type PunchResult, type Shift, supabase } from "../supabase";
+import { colors, space } from "../theme";
 
 NetInfo.configure({ shouldFetchWiFiSSID: true });
 
-interface Outcome {
-  ok: boolean;
-  title: string;
-  lines: string[];
-}
-
 export default function ClockScreen() {
-  const { settings, t, ready, addPunch } = useSettings();
-  const person = personById(settings.personId);
-  const clinicIds = person ? myClinicIds(person.id) : [];
+  const { t, lang, me, employments } = useSession();
+  const clinics = useMyClinics();
   const [clinicId, setClinicId] = useState<string | null>(null);
-  const activeClinicId = clinicId && clinicIds.includes(clinicId) ? clinicId : clinicIds[0];
+  const clinic = clinics.find((c) => c.id === clinicId) ?? clinics[0];
+  const [punches, setPunches] = useState<Punch[]>([]);
+  const [nextShift, setNextShift] = useState<Shift | null>(null);
   const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; title: string; lines: string[] } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const handled = useRef(false);
 
-  if (!ready) return null;
-  if (!person || !activeClinicId) {
-    return (
-      <ScrollView contentContainerStyle={styles.page}>
-        <PersonPicker />
-      </ScrollView>
-    );
-  }
+  const load = useCallback(async () => {
+    if (!me) return;
+    const empIds = employments.map((e) => e.id);
+    const [p, s] = await Promise.all([
+      supabase.from("punches").select("id, location_id, kind, method, occurred_at, flags").eq("person_id", me.id).order("occurred_at", { ascending: false }).limit(12),
+      empIds.length
+        ? supabase.from("shifts").select("*").in("employment_id", empIds).gt("ends_at", new Date().toISOString()).neq("response", "declined").order("starts_at").limit(1)
+        : Promise.resolve({ data: [] }),
+    ]);
+    setPunches((p.data as Punch[]) ?? []);
+    setNextShift(((s.data as Shift[]) ?? [])[0] ?? null);
+  }, [me, employments]);
 
-  const clinic = clinicById(activeClinicId);
-  const now = new Date();
-  const shift = myShifts(person.id).find((s) => s.locationId === activeClinicId && shiftEnd(s) > now);
-  const mine = settings.punches.filter((p) => p.personId === person.id);
-  const last = mine[mine.length - 1];
-  const clockedIn = last?.kind === "in";
-  const kind: "in" | "out" = clockedIn ? "out" : "in";
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  function report(decision: PunchDecision, method: "gps" | "qr", punchClinicId: string, extra: string[] = []) {
-    const c = clinicById(punchClinicId);
-    const loc = punchLocationFor(punchClinicId, settings.clinicOverrides);
-    if (decision.accepted) {
-      const at = new Date();
-      addPunch({ personId: person!.id, kind, at: at.toISOString(), clinicId: punchClinicId, method, flags: decision.flags, distanceM: decision.distanceM });
-      setOutcome({ ok: true, title: t.accepted(kind, fmtTime(at), c.name), lines: [...extra, ...decision.flags.map((f) => t.flags[f]).filter(Boolean)] });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+  const clockedIn = punches[0]?.kind === "in";
+
+  function report(r: PunchResult | null, error: string | null, punchClinicName: string, extra: string[] = []) {
+    if (error || !r) {
+      setOutcome({ ok: false, title: error ?? t.error, lines: [] });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => undefined);
       return;
     }
-    let title = "";
-    switch (decision.reason) {
-      case "too_early":
-        title = t.reasons.too_early(loc.earlyPunchLimitMin, decision.opensInMin ?? 0);
-        break;
-      case "outside_geofence":
-        title = t.reasons.outside_geofence(fmtDistance(decision.distanceM ?? 0, settings.lang), c.name, loc.geofenceRadiusM);
-        break;
-      case "no_position":
-        title = t.reasons.no_position;
-        break;
-      case "invalid_qr":
-        title = t.reasons.invalid_qr;
-        break;
-      case "mock_location":
-        title = t.reasons.mock_location;
-        break;
+    if (r.accepted) {
+      const lines = [...extra];
+      if (r.distance_m != null && !(r.flags ?? []).includes("outside_geofence_wifi_ok")) lines.unshift(t.distanceOk(r.distance_m, r.radius_m ?? 0));
+      lines.push(...(r.flags ?? []).map((f) => t.flags[f]).filter(Boolean));
+      setOutcome({ ok: true, title: t.accepted(r.kind ?? "in", fmtTime(r.occurred_at ?? new Date(), clinic?.timezone), punchClinicName), lines });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+      load();
+    } else {
+      setOutcome({
+        ok: false,
+        title: reasonText(t, r.reason, { distance: r.distance_m != null ? fmtDistance(r.distance_m, lang) : undefined, radius: r.radius_m, opensIn: r.opens_in_min }),
+        lines: extra,
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => undefined);
     }
-    setOutcome({ ok: false, title, lines: extra });
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => undefined);
   }
 
   async function punchByLocation() {
+    if (!clinic) return;
     setBusy(true);
     setOutcome(null);
     try {
+      const net = await NetInfo.fetch();
+      if (net.isConnected === false) {
+        setOutcome({ ok: false, title: t.offline, lines: [] });
+        return;
+      }
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
         setOutcome({ ok: false, title: t.locationDenied, lines: [] });
         return;
       }
-      const [position, net] = await Promise.all([
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
-        NetInfo.fetch(),
-      ]);
-      const wifi = net.type === NetInfoStateType.wifi ? net.details : null;
-      const loc = punchLocationFor(activeClinicId!, settings.clinicOverrides);
-      const decision = evaluatePunch({
-        kind,
-        method: "phone_geofence",
-        at: new Date(),
-        location: loc,
-        scheduledStart: settings.ignoreSchedule || !shift ? null : shiftStart(shift),
-        position: { latitude: position.coords.latitude, longitude: position.coords.longitude, accuracyM: position.coords.accuracy ?? undefined },
-        wifiBssid: wifi?.bssid ?? null,
-        mockLocationDetected: position.mocked === true,
-        offline: net.isConnected === false,
+      const [position, net2] = await Promise.all([Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }), NetInfo.fetch()]);
+      const wifi = net2.type === NetInfoStateType.wifi ? net2.details : null;
+      const { data, error } = await supabase.rpc("punch_with_location", {
+        p_location_id: clinic.id,
+        p_latitude: position.coords.latitude,
+        p_longitude: position.coords.longitude,
+        p_accuracy_m: position.coords.accuracy ?? null,
+        p_wifi_bssid: wifi?.bssid ?? null,
+        p_mocked: position.mocked === true,
       });
-      const extra: string[] = [];
-      if (decision.accepted && decision.distanceM !== undefined && !decision.flags.includes("outside_geofence_wifi_ok")) {
-        extra.push(t.gpsOk(decision.distanceM, loc.geofenceRadiusM, position.coords.accuracy ?? null));
-      }
-      if (wifi?.ssid) extra.push(t.wifiSeen(wifi.ssid));
-      report(decision, "gps", activeClinicId!, extra);
+      report(data as PunchResult | null, error?.message ?? null, clinic.name, wifi?.ssid ? [`Wi-Fi : ${wifi.ssid}`] : []);
     } catch {
-      setOutcome({ ok: false, title: t.reasons.no_position, lines: [] });
+      setOutcome({ ok: false, title: t.reasons.no_position as string, lines: [] });
     } finally {
       setBusy(false);
     }
@@ -144,60 +117,61 @@ export default function ClockScreen() {
     setScanning(true);
   }
 
-  function onScanned(data: string) {
+  async function onScanned(text: string) {
     if (handled.current) return;
     handled.current = true;
     setScanning(false);
-    const payload = parseQrPayload(data);
+    const payload = parseQrPayload(text);
     if (!payload) {
       setOutcome({ ok: false, title: t.notClinicCode, lines: [] });
       return;
     }
-    if (!clinicIds.includes(payload.locationId)) {
+    const target = clinics.find((c) => c.id === payload.locationId);
+    if (!target) {
       setOutcome({ ok: false, title: t.notYourClinic, lines: [] });
       return;
     }
-    const scannedShift = myShifts(person!.id).find((s) => s.locationId === payload.locationId && shiftEnd(s) > new Date());
-    const decision = evaluatePunch({
-      kind,
-      method: "rotating_qr",
-      at: new Date(),
-      location: punchLocationFor(payload.locationId, settings.clinicOverrides),
-      scheduledStart: settings.ignoreSchedule || !scannedShift ? null : shiftStart(scannedShift),
-      qrToken: payload.code,
-    });
-    report(decision, "qr", payload.locationId, decision.accepted ? [t.qrOk] : []);
+    setBusy(true);
+    const { data, error } = await supabase.rpc("punch_with_qr", { p_location_id: payload.locationId, p_code: payload.code });
+    setBusy(false);
+    report(data as PunchResult | null, error?.message ?? null, target.name, (data as PunchResult | null)?.accepted ? [t.qrOk] : []);
   }
 
+  const nameOf = (id: string) => clinics.find((c) => c.id === id)?.name ?? "";
+
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      {clinicIds.length > 1 && (
+    <ScrollView
+      contentContainerStyle={styles.page}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
+    >
+      {clinics.length > 1 && (
         <Card>
           <Label>{t.clinic}</Label>
-          <Segmented options={clinicIds.map((id) => ({ value: id, label: clinicById(id).name }))} value={activeClinicId} onChange={setClinicId} />
+          <Segmented options={clinics.map((c) => ({ value: c.id, label: c.name }))} value={clinic?.id ?? ""} onChange={setClinicId} />
         </Card>
       )}
 
       <Card style={styles.shiftCard}>
         <Label>{t.nextShift}</Label>
-        {shift ? (
+        {nextShift ? (
           <>
             <Text style={styles.big}>
-              {shift.start}–{shift.end}
+              {fmtTime(nextShift.starts_at)}–{fmtTime(nextShift.ends_at)}
             </Text>
             <Text style={styles.body}>
-              {fmtDay(shift.date, settings.lang, t.daysLong)} · {clinic.name} {clinic.province}
+              {fmtDay(nextShift.starts_at, lang)} · {nameOf(nextShift.location_id)}
             </Text>
           </>
         ) : (
           <Text style={styles.body}>{t.noShift}</Text>
         )}
-        {settings.ignoreSchedule && <Muted small>{t.ignoringSchedule}</Muted>}
       </Card>
 
       <Card>
-        <Text style={styles.action}>{clockedIn ? t.clockOut : t.clockIn}</Text>
-        {clockedIn && last && <Muted>{t.clockedInSince(fmtTime(new Date(last.at)))}</Muted>}
+        <Text style={styles.action}>
+          {clockedIn ? t.clockOut : t.clockIn}
+          {clinic ? ` · ${clinic.name}` : ""}
+        </Text>
         <Button big variant={clockedIn ? "dark" : "primary"} title={busy ? t.checking : t.byLocation} busy={busy} onPress={punchByLocation} />
         <Button title={t.byQr} onPress={startScan} />
         {outcome && <Result ok={outcome.ok} title={outcome.title} lines={outcome.lines} />}
@@ -205,21 +179,18 @@ export default function ClockScreen() {
 
       <Card>
         <Label>{t.punches}</Label>
-        {mine.length === 0 ? (
+        {punches.length === 0 ? (
           <Muted>{t.noPunches}</Muted>
         ) : (
-          [...mine]
-            .reverse()
-            .slice(0, 12)
-            .map((p) => (
-              <View key={p.id} style={styles.punchRow}>
-                <Tag text={p.kind === "in" ? t.in : t.out} tone={p.kind === "in" ? "accent" : "ink"} />
-                <Text style={[styles.body, mono]}>{fmtTime(new Date(p.at))}</Text>
-                <Text style={styles.small}>
-                  {fmtDay(p.at.slice(0, 10), settings.lang, t.daysLong, false)} · {clinicById(p.clinicId).name} · {t.methodNames[p.method]}
-                </Text>
-              </View>
-            ))
+          punches.map((p) => (
+            <View key={p.id} style={styles.punchRow}>
+              <Tag text={p.kind === "in" ? t.in : t.out} tone={p.kind === "in" ? "accent" : "ink"} />
+              <Text style={styles.body}>{fmtTime(p.occurred_at)}</Text>
+              <Text style={styles.small}>
+                {fmtDay(p.occurred_at, lang, undefined, false)} · {nameOf(p.location_id)} · {t.methodNames[p.method]}
+              </Text>
+            </View>
+          ))
         )}
       </Card>
 
@@ -227,12 +198,7 @@ export default function ClockScreen() {
         <SafeAreaView style={styles.scanPage}>
           <Text style={styles.scanTitle}>{t.scanTitle}</Text>
           <View style={styles.cameraBox}>
-            <CameraView
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-              onBarcodeScanned={(r) => onScanned(r.data)}
-            />
+            <CameraView style={StyleSheet.absoluteFill} facing="back" barcodeScannerSettings={{ barcodeTypes: ["qr"] }} onBarcodeScanned={(r) => onScanned(r.data)} />
           </View>
           <Button title={t.cancel} onPress={() => setScanning(false)} />
         </SafeAreaView>
@@ -245,7 +211,7 @@ const styles = StyleSheet.create({
   page: { padding: space.md, gap: space.md },
   shiftCard: { backgroundColor: colors.accentSoft },
   big: { fontSize: 30, fontWeight: "600", color: colors.ink, fontVariant: ["tabular-nums"] },
-  body: { fontSize: 15, color: colors.ink },
+  body: { fontSize: 15, color: colors.ink, fontVariant: ["tabular-nums"] },
   small: { fontSize: 12, color: colors.muted, flexShrink: 1 },
   action: { fontSize: 18, fontWeight: "700", color: colors.ink },
   punchRow: { flexDirection: "row", alignItems: "center", gap: space.sm, flexWrap: "wrap", paddingVertical: 4 },
