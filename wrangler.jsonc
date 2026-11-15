@@ -1,0 +1,10 @@
+{
+  // Cloudflare Workers config for the manager web page (static files only, no server code).
+  // Build: npm ci && npm run manager:build   Deploy: npx wrangler deploy
+  "name": "clinic-workforce",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./apps/manager/dist",
+    "not_found_handling": "single-page-application"
+  }
+}
