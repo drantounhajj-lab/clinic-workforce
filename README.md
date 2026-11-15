@@ -12,6 +12,7 @@ Workforce and HR platform for healthcare clinics: scheduling, time clock, timesh
 | `packages/rules` | Labour rules engine: overlaps, overtime (QC 40 h / ON 44 h), weekly rest, meal breaks, Quebec 5-day notice, availability, allowed clinics, expired licences, min/max hours |
 | `packages/timeclock` | Punch decisions: early-punch limit, geofence, clinic Wi-Fi, fake GPS, offline, rotating QR code; plain-language punch fixes |
 | `packages/sample-data` | Fictional clinics, companies, staff and schedules used by the demos and the app |
+| `apps/manager` | Manager web app (Supabase): sign-in by email code, clinics, employees and roles, real schedule builder with rule checks, iPad pairing, punches. Hosted on Cloudflare Pages (see below) |
 | `apps/schedule-demo` | Manager schedule builder (web demo) |
 | `apps/staff-demo` | Staff app and clinic iPad kiosk (web demo) |
 | `apps/mobile` | iPhone / Android / iPad app (Expo). See `apps/mobile/README.md` to install with TestFlight |
@@ -54,3 +55,15 @@ Pass the shifts of the week before and the week after the weeks being checked, s
 2. Manager web app: schedule builder that calls the rules engine live
 3. Staff mobile app: schedule, availability, punch-in (geofence + Wi-Fi + rotating QR), iPad kiosk mode
 4. Timesheets from punches, payroll export per company
+
+## Manager web app hosting (Cloudflare Pages)
+
+Workers & Pages → Create → Pages → Connect to Git → `clinic-workforce`:
+
+- Framework preset: None
+- Build command: `npm ci && npm run manager:build`
+- Build output directory: `apps/manager/dist`
+- Root directory: `/`
+- Environment variable: `NODE_VERSION` = `22`
+
+Every push to `main` redeploys it. The Supabase URL and publishable key are in `apps/manager/src/supabase.ts` (public values; data is protected by row-level security).

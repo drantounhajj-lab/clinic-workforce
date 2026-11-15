@@ -7,13 +7,16 @@
   "workspaces": [
     "packages/*",
     "apps/schedule-demo",
-    "apps/staff-demo"
+    "apps/staff-demo",
+    "apps/manager"
   ],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "demo:build": "node apps/schedule-demo/build.mjs && node apps/staff-demo/build.mjs",
-    "test:db": "vitest run --config vitest.db.config.ts"
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "manager:dev": "npm run dev -w apps/manager",
+    "manager:build": "npm run build -w apps/manager"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
