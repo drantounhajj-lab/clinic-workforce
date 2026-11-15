@@ -105,7 +105,7 @@ const en = {
   noClinics: "No clinics yet. Add one in Clinics.",
   // Kiosks
   pairTitle: "Pair a clinic iPad",
-  pairHint: "On the iPad, open the app → Setup → Start kiosk mode. Enter the 6-digit code it shows.",
+  pairHint: "On the iPad, open the app and tap \"Set up this device as a clinic iPad\" (sign-in screen, or Setup). Enter the 6-digit code it shows.",
   pairCode: "Code shown on the iPad",
   deviceName: "Name",
   pair: "Pair",
@@ -234,7 +234,7 @@ const fr: typeof en = {
   declined: "Refusé",
   noClinics: "Aucune clinique. Ajoutez-en une dans Cliniques.",
   pairTitle: "Jumeler un iPad de clinique",
-  pairHint: "Sur l'iPad, ouvrez l'application → Réglages → Démarrer le mode kiosque. Entrez le code à 6 chiffres affiché.",
+  pairHint: "Sur l'iPad, ouvrez l'application et touchez « Configurer cet appareil comme iPad de clinique » (écran de connexion ou Réglages). Entrez le code à 6 chiffres affiché.",
   pairCode: "Code affiché sur l'iPad",
   deviceName: "Nom",
   pair: "Jumeler",
