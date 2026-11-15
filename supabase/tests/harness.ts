@@ -46,6 +46,8 @@ export interface TestUser {
   id: string;
   email: string | null;
   anonymous?: boolean;
+  /** How the session was opened, as in the access token's "amr" claim. */
+  method?: "otp" | "password" | "anonymous";
 }
 
 export class TestDb {
@@ -95,7 +97,7 @@ export class TestDb {
       "insert into auth.users (email, is_anonymous, email_confirmed_at, encrypted_password) values ($1, $2, $3, $4) returning id",
       [email, anonymous, confirmed ? new Date() : null, opts.password ? "$2a$10$abcdefghijklmnopqrstuv" : ""],
     );
-    return { id: rows[0].id, email, anonymous };
+    return { id: rows[0].id, email, anonymous, method: anonymous ? "anonymous" : opts.password ? "password" : "otp" };
   }
 
   /** Run a query as a signed-in user, with row-level security applied. */
@@ -106,7 +108,8 @@ export class TestDb {
         await this.client.query("set local role anon");
       } else {
         await this.client.query("set local role authenticated");
-        const claims = JSON.stringify({ sub: user.id, email: user.email, role: "authenticated", is_anonymous: !!user.anonymous });
+        const amr = [{ method: user.method ?? (user.anonymous ? "anonymous" : "otp"), timestamp: 1 }];
+        const claims = JSON.stringify({ sub: user.id, email: user.email, role: "authenticated", is_anonymous: !!user.anonymous, amr });
         await this.client.query("select set_config('request.jwt.claims', $1, true)", [claims]);
       }
       const { rows } = await this.client.query(sql, params);

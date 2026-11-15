@@ -86,7 +86,7 @@ export function Login() {
 }
 
 export function CreateOrganization() {
-  const { t, reload } = useSession();
+  const { t, reload, session } = useSession();
   const [org, setOrg] = useState("");
   const [first, setFirst] = useState("");
   const [last, setLast] = useState("");
@@ -107,6 +107,15 @@ export function CreateOrganization() {
   return (
     <div className="center-page">
       <form className="card narrow stack" onSubmit={submit}>
+        <p className="notice">{t.addedByEmployer(session?.user.email ?? "")}</p>
+        <div className="row">
+          <button type="button" onClick={() => reload()}>
+            {t.checkAgain}
+          </button>
+          <button type="button" className="link" onClick={() => supabase.auth.signOut()}>
+            {t.signOut}
+          </button>
+        </div>
         <h1>{t.createOrgTitle}</h1>
         <p className="muted">{t.createOrgHint}</p>
         <label className="field" htmlFor="org">

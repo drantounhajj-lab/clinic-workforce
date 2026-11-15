@@ -15,6 +15,9 @@ const en = {
   invalidCode: "Enter the code from the email.",
   createOrgTitle: "Create your organization",
   createOrgHint: "You'll be the owner. You can add companies, clinics and staff next.",
+  addedByEmployer: (e: string) =>
+    `Were you added by your employer? Don't create an organization. Ask them to check that your email is exactly ${e}, then click "Check again". Employees use the phone app; this page is for managers.`,
+  checkAgain: "Check again",
   orgName: "Organization name",
   firstName: "First name",
   lastName: "Last name",
@@ -148,6 +151,9 @@ const fr: typeof en = {
   invalidCode: "Entrez le code reçu par courriel.",
   createOrgTitle: "Créer votre organisation",
   createOrgHint: "Vous en serez le propriétaire. Vous ajouterez ensuite les sociétés, cliniques et employés.",
+  addedByEmployer: (e) =>
+    `Votre employeur vous a ajouté? Ne créez pas d'organisation. Demandez-lui de vérifier que votre courriel est exactement ${e}, puis cliquez « Vérifier de nouveau ». Les employés utilisent l'application mobile; cette page est pour les gestionnaires.`,
+  checkAgain: "Vérifier de nouveau",
   orgName: "Nom de l'organisation",
   firstName: "Prénom",
   lastName: "Nom",

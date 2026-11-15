@@ -37,8 +37,9 @@ begin
   values (v_company, 'Demo Clinic', 'ON', v_tz, '100 Demo Street, Ottawa, ON', 45.4215, -75.6972, 500, 240)
   returning id into v_location;
 
-  insert into public.persons (account_id, user_id, first_name, last_name, email)
-  values (v_account, v_user, 'App', 'Review', lower(v_email))
+  -- password_login_allowed: Apple's reviewers sign in with a password, not an email code.
+  insert into public.persons (account_id, user_id, first_name, last_name, email, password_login_allowed)
+  values (v_account, v_user, 'App', 'Review', lower(v_email), true)
   returning id into v_person;
   insert into public.role_assignments (person_id, role, location_id) values (v_person, 'clinic_manager', v_location);
   insert into public.employments (person_id, company_id, desired_weekly_minutes) values (v_person, v_company, 2400)

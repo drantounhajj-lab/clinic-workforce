@@ -266,11 +266,35 @@ describe("linking logins to invited people", () => {
     expect(await linkedUser("nadia@example.com")).toBe(nadia.id);
   });
 
-  it("never links a login created with a password", async () => {
+  it("gives a password session nothing, even once linked", async () => {
     await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Paul', 'Roy', 'paul@example.com')");
+    // Someone registers Paul's email with a password before Paul's first sign-in...
     const squatter = await db.createUser("paul@example.com", false, { confirmed: false, password: true });
+    // ...then Paul signs in with his email code, which confirms that same login.
     await db.admin("update auth.users set email_confirmed_at = now() where id = $1", [squatter.id]);
-    expect(await linkedUser("paul@example.com")).toBeNull();
+    expect(await linkedUser("paul@example.com")).toBe(squatter.id);
+    // Paul's code session works; the squatter's password session sees nothing and can't punch.
+    const paulByCode: TestUser = { ...squatter, method: "otp" };
+    expect(await db.as(paulByCode, "select first_name from public.persons where user_id = auth.uid()")).toEqual([{ first_name: "Paul" }]);
+    expect(await db.as(squatter, "select * from public.persons")).toHaveLength(0);
+    expect(await db.rpc(squatter, "punch_with_location", [ids.gat, NEAR.lat, NEAR.lon])).toMatchObject({ accepted: false, reason: "not_a_member" });
+    expect(await db.rpc(squatter, "create_account", ["X", "Y", "Z"])).toMatchObject({ ok: false });
+  });
+
+  it("does not let a manager create a password-allowed person", async () => {
+    await expect(
+      db.as(tony, "insert into public.persons (first_name, last_name, email, password_login_allowed) values ('A', 'B', 'ab@example.com', true)"),
+    ).rejects.toThrow(/row-level security/);
+    await expect(db.as(tony, "update public.persons set password_login_allowed = true where id = $1", [ids.marie])).rejects.toThrow(/permission denied/);
+  });
+
+  it("links logins that signed in before this fix", async () => {
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('Old', 'Login', 'old@example.com')");
+    const old = await db.createUser("old@example.com");
+    await db.admin("update public.persons set user_id = null where email = 'old@example.com'");
+    const [{ n }] = await db.admin<{ n: number }>("select app.link_pending_logins() as n");
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect(await linkedUser("old@example.com")).toBe(old.id);
   });
 
   it("links someone who signed in before a manager added them", async () => {
