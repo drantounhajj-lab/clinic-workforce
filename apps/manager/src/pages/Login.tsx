@@ -30,7 +30,7 @@ export function Login() {
 
   async function verify(e: React.FormEvent) {
     e.preventDefault();
-    if (!/^\d{6}$/.test(code.trim())) {
+    if (!/^\d{6,10}$/.test(code.trim())) {
       setError(t.invalidCode);
       return;
     }
@@ -65,7 +65,7 @@ export function Login() {
                 id="login-code"
                 inputMode="numeric"
                 autoComplete="one-time-code"
-                maxLength={6}
+                maxLength={10}
                 value={code}
                 onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
                 required

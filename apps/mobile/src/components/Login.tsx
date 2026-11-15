@@ -33,7 +33,7 @@ export function Login() {
   }
 
   async function verify() {
-    if (!/^\d{6}$/.test(code)) {
+    if (!/^\d{6,10}$/.test(code)) {
       setError(t.invalidCode);
       return;
     }
@@ -135,7 +135,7 @@ export function Login() {
                 <TextInput
                   style={[styles.input, styles.codeInput]}
                   value={code}
-                  onChangeText={(v) => setCode(v.replace(/\D/g, "").slice(0, 6))}
+                  onChangeText={(v) => setCode(v.replace(/\D/g, "").slice(0, 10))}
                   keyboardType="number-pad"
                   textContentType="oneTimeCode"
                   autoComplete="one-time-code"
@@ -162,6 +162,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontWeight: "700", color: colors.ink },
   label: { fontSize: 12, fontWeight: "600", color: colors.muted, marginTop: space.sm },
   input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, paddingHorizontal: space.md, minHeight: 48, fontSize: 17, color: colors.ink, backgroundColor: colors.surface },
-  codeInput: { fontSize: 26, letterSpacing: 8, textAlign: "center", fontVariant: ["tabular-nums"] },
+  codeInput: { fontSize: 24, letterSpacing: 4, textAlign: "center", fontVariant: ["tabular-nums"] },
   error: { color: colors.error, fontSize: 14 },
 });
