@@ -3,7 +3,8 @@ import { useSession } from "../session";
 import { type KioskDevice, must, supabase } from "../supabase";
 
 export function Kiosks() {
-  const { t, lang, managedLocations } = useSession();
+  const { t, lang, locationsWith } = useSession();
+  const managedLocations = locationsWith("kiosks");
   const [devices, setDevices] = useState<KioskDevice[]>([]);
   const [code, setCode] = useState("");
   const [locationId, setLocationId] = useState(managedLocations[0]?.id ?? "");

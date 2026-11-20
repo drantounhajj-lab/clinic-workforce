@@ -68,6 +68,7 @@ export interface Employment {
   desired_weekly_minutes: number | null;
   min_weekly_minutes: number | null;
   max_weekly_minutes: number | null;
+  job_role_id: string | null;
   employment_locations: { location_id: string }[];
 }
 
@@ -88,6 +89,7 @@ export interface Shift {
   ends_at: string;
   unpaid_break_minutes: number;
   response: "pending" | "confirmed" | "declined";
+  job_role_id: string | null;
   notes: string | null;
   updated_at: string;
 }
@@ -130,4 +132,48 @@ export interface Punch {
 export function must<T>(res: { data: T | null; error: { message: string } | null }): T {
   if (res.error) throw new Error(res.error.message);
   return res.data as T;
+}
+
+export type Permission = "schedule" | "employees" | "punches" | "clinics" | "kiosks";
+export const PERMISSIONS: Permission[] = ["schedule", "employees", "punches", "clinics", "kiosks"];
+
+export interface JobRole {
+  id: string;
+  account_id: string;
+  name_fr: string;
+  name_en: string;
+}
+
+export interface CustomRole {
+  id: string;
+  account_id: string;
+  company_id: string;
+  name: string;
+  permissions: Permission[];
+}
+
+export interface CustomRoleAssignment {
+  id: string;
+  person_id: string;
+  custom_role_id: string;
+  location_id: string;
+}
+
+export type SwapStatus = "pending_colleague" | "pending_manager" | "approved" | "refused_colleague" | "refused_manager" | "cancelled";
+
+export interface ShiftSwap {
+  id: string;
+  shift_id: string;
+  location_id: string;
+  requester_employment_id: string;
+  target_employment_id: string;
+  target_shift_id: string | null;
+  target_location_id: string | null;
+  note: string | null;
+  status: SwapStatus;
+  colleague_responded_at: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  manager_note: string | null;
+  created_at: string;
 }

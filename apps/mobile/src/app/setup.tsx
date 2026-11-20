@@ -1,20 +1,64 @@
 import NetInfo, { NetInfoStateType } from "@react-native-community/netinfo";
 import * as Location from "expo-location";
 import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { Button, Card, Label, Muted, Segmented } from "../components/ui";
 import { useSession } from "../session";
+import { clearShiftSync, loadPrefs, REMINDER_CHOICES, type ReminderMinutes, removeCalendar, savePrefs, type SyncPrefs, syncShifts } from "../shiftSync";
 import { supabase } from "../supabase";
 import { colors, radius, space } from "../theme";
 
 export default function SetupScreen() {
-  const { t, lang, setLang, me, session, locations, managesLocation, reload } = useSession();
+  const { t, lang, setLang, me, session, locations, employments, can, reload } = useSession();
+  const [prefs, setPrefs] = useState<SyncPrefs | null>(null);
+  const [syncMsg, setSyncMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [hasPin, setHasPin] = useState<boolean | null>(null);
   const [pin, setPin] = useState("");
   const [pinMsg, setPinMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [messages, setMessages] = useState<Record<string, string>>({});
-  const managed = locations.filter(managesLocation);
+  const managed = locations.filter((l) => can(l, "clinics"));
+
+  useEffect(() => {
+    loadPrefs().then(setPrefs);
+  }, []);
+
+  async function applyPrefs(next: SyncPrefs) {
+    const before = prefs;
+    setPrefs(next);
+    setSyncMsg(null);
+    setSyncing(true);
+    await savePrefs(next);
+    if (before?.calendar && !next.calendar) await removeCalendar();
+    const out = await syncShifts({ employments, locations, t, lang });
+    setSyncing(false);
+    const failed = out.find((o) => !o.ok);
+    if (failed && !failed.ok) {
+      // Permission refused: switch the option back off
+      const reverted = {
+        calendar: failed.reason === "calendar_denied" ? false : next.calendar,
+        reminderMinutes: failed.reason === "notifications_denied" ? 0 : next.reminderMinutes,
+      } as SyncPrefs;
+      setPrefs(reverted);
+      await savePrefs(reverted);
+      setSyncMsg({
+        ok: false,
+        text: failed.reason === "calendar_denied" ? t.calendarDenied : failed.reason === "notifications_denied" ? t.notificationsDenied : (failed.message ?? t.error),
+      });
+      return;
+    }
+    const lines: string[] = [];
+    if (next.calendar && out[0]?.ok) lines.push(t.calendarAdded(out[0].count));
+    const rem = next.calendar ? out[1] : out[0];
+    if (next.reminderMinutes && rem?.ok) lines.push(t.remindersOn(rem.count));
+    setSyncMsg(lines.length ? { ok: true, text: lines.join(" ") } : null);
+  }
+
+  async function signOut() {
+    await clearShiftSync();
+    await supabase.auth.signOut();
+  }
 
   useEffect(() => {
     supabase.rpc("has_pin").then(({ data }) => setHasPin(data === true));
@@ -96,8 +140,34 @@ export default function SetupScreen() {
           {me?.first_name} {me?.last_name}
         </Text>
         <Muted>{session?.user.email}</Muted>
-        <Button title={t.signOut} onPress={() => supabase.auth.signOut()} />
+        <Button title={t.signOut} onPress={signOut} />
       </Card>
+
+      {prefs && (
+        <Card>
+          <Label>{t.calendarTitle}</Label>
+          <View style={styles.switchRow}>
+            <View style={styles.switchText}>
+              <Text style={styles.option}>{t.calendarSync}</Text>
+              <Muted small>{t.calendarSyncHint}</Muted>
+            </View>
+            <Switch
+              value={prefs.calendar}
+              disabled={syncing}
+              onValueChange={(v) => applyPrefs({ ...prefs, calendar: v })}
+              accessibilityLabel={t.calendarSync}
+            />
+          </View>
+          <Text style={styles.option}>{t.reminders}</Text>
+          <Muted small>{t.remindersHint}</Muted>
+          <Segmented
+            options={REMINDER_CHOICES.map((m) => ({ value: String(m), label: m ? t.reminderLabel(m) : t.reminderOff }))}
+            value={String(prefs.reminderMinutes)}
+            onChange={(v) => applyPrefs({ ...prefs, reminderMinutes: Number(v) as ReminderMinutes })}
+          />
+          {syncMsg && <Text style={{ color: syncMsg.ok ? colors.ok : colors.error }}>{syncMsg.text}</Text>}
+        </Card>
+      )}
 
       <Card>
         <Label>{t.pinTitle}</Label>
@@ -141,6 +211,7 @@ export default function SetupScreen() {
           variant="dark"
           title={t.setUpKiosk}
           onPress={async () => {
+            await clearShiftSync();
             await supabase.auth.signOut();
             await supabase.auth.signInAnonymously();
           }}
@@ -156,4 +227,7 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, paddingHorizontal: space.md, minHeight: 46, fontSize: 18, color: colors.ink, letterSpacing: 4 },
   clinic: { borderTopWidth: 1, borderTopColor: colors.line, paddingTop: space.md, marginTop: space.sm, gap: space.sm },
   clinicName: { fontSize: 16, fontWeight: "600", color: colors.ink },
+  switchRow: { flexDirection: "row", alignItems: "center", gap: space.md },
+  switchText: { flex: 1, gap: 2 },
+  option: { fontSize: 15, fontWeight: "600", color: colors.ink },
 });

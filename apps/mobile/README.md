@@ -1,13 +1,14 @@
 # Clinic Workforce — mobile app (iPhone, Android, iPad kiosk)
 
-Expo / React Native app, SDK 57. Version 0.2: connected to the Supabase backend. Staff sign in with an email code, see their published shifts, and punch in. Every punch is checked and stored on the server.
+Expo / React Native app, SDK 57. Version 0.3: connected to the Supabase backend. Staff sign in with an email code, see their published shifts, and punch in. Every punch is checked and stored on the server.
 
 ## What it does
 
 - **Sign in with an email code.** No passwords and no "pick who you are". Only people a manager added (in the manager web page) can use the app; anyone else sees "not invited".
 - **Clock in / out by location:** phone GPS sent to the server, which checks the clinic's zone and refuses fake-location apps. If the phone is on a registered clinic Wi-Fi, an out-of-zone reading is still accepted, with a flag. Too early before a shift is refused.
 - **Clock in / out by QR:** the clinic iPad shows a code that changes every 30 seconds, signed by the server. Staff scan it from the Clock screen.
-- **Schedule:** published shifts for the clinics you work at, with confirm / decline.
+- **Schedule:** published shifts for the clinics you work at, with the clinic address and position. Staff can't change shifts: they tap "Got it" to acknowledge, or ask to **exchange or give** a shift to a colleague (the colleague accepts, then a manager approves on the manager page).
+- **Calendar and reminders** (Setup, opt-in): keeps a "Clinic Workforce" calendar on the phone with each shift and the clinic address, and schedules a local notification before each shift (30 min, 1 h, 2 h or the day before). Updated whenever the app opens.
 - **Setup:** language, sign out, your personal 4–6 digit PIN for the clinic iPad.
 - **Manager tools** (clinic managers and owners only): save a clinic's real location and its Wi-Fi while standing inside it.
 - **Clinic iPad (kiosk):** "Set up this device as a clinic iPad" on the sign-in screen shows a pairing code. A manager enters it in the manager web page (Kiosks) to attach the iPad to a clinic. The iPad then shows the rotating QR code and a PIN pad. Hold the clinic name for 3 seconds to leave kiosk mode.

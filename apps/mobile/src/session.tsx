@@ -7,7 +7,7 @@ import type { Session } from "@supabase/supabase-js";
 import { getLocales } from "expo-localization";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { type Lang, strings, type Strings } from "./i18n";
-import { type Employment, type Location, type Person, type RoleAssignment, supabase } from "./supabase";
+import { type Employment, type JobRole, type Location, type MyCustomRole, type Permission, type Person, type RoleAssignment, supabase } from "./supabase";
 
 export interface KioskInfo {
   kiosk_id: string;
@@ -28,9 +28,13 @@ interface Ctx {
   employments: Employment[];
   locations: Location[];
   roles: RoleAssignment[];
+  customRoles: MyCustomRole[];
+  jobRoles: JobRole[];
   kiosk: KioskInfo | null;
   reload: () => Promise<void>;
   managesLocation: (l: Location) => boolean;
+  /** Full manager of the clinic, or a custom role there with the permission. */
+  can: (l: Location, perm: Permission) => boolean;
 }
 
 const SessionContext = createContext<Ctx | null>(null);
@@ -44,6 +48,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [employments, setEmployments] = useState<Employment[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [roles, setRoles] = useState<RoleAssignment[]>([]);
+  const [customRoles, setCustomRoles] = useState<MyCustomRole[]>([]);
+  const [jobRoles, setJobRoles] = useState<JobRole[]>([]);
   const [kiosk, setKiosk] = useState<KioskInfo | null>(null);
 
   useEffect(() => {
@@ -64,6 +70,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setEmployments([]);
     setLocations([]);
     setRoles([]);
+    setCustomRoles([]);
+    setJobRoles([]);
     setKiosk(null);
     if (!s) return;
     if (s.user.is_anonymous) {
@@ -74,14 +82,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const { data: person } = await supabase.from("persons").select("id, account_id, first_name, last_name, email").eq("user_id", s.user.id).maybeSingle();
     if (!person) return;
     setMe(person as Person);
-    const [emps, locs, rls] = await Promise.all([
-      supabase.from("employments").select("id, company_id, employment_locations(location_id)").eq("person_id", person.id),
-      supabase.from("locations").select("id, company_id, name, province, timezone, latitude, longitude, geofence_radius_m, early_punch_limit_min").order("name"),
+    const [emps, locs, rls, custom, jobs] = await Promise.all([
+      supabase.from("employments").select("id, company_id, job_role_id, employment_locations(location_id)").eq("person_id", person.id),
+      supabase.from("locations").select("id, company_id, name, province, timezone, address, latitude, longitude, geofence_radius_m, early_punch_limit_min").order("name"),
       supabase.from("role_assignments").select("role, company_id, location_id").eq("person_id", person.id),
+      supabase.from("custom_role_assignments").select("location_id, custom_roles(name, permissions)").eq("person_id", person.id),
+      supabase.from("job_roles").select("id, name_fr, name_en"),
     ]);
     setEmployments((emps.data as Employment[]) ?? []);
     setLocations((locs.data as Location[]) ?? []);
     setRoles((rls.data as RoleAssignment[]) ?? []);
+    setCustomRoles((custom.data as unknown as MyCustomRole[]) ?? []);
+    setJobRoles((jobs.data as JobRole[]) ?? []);
   }, []);
 
   useEffect(() => {
@@ -107,6 +119,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       (r) => r.role === "owner" || (r.role === "company_admin" && r.company_id === l.company_id) || (r.role === "clinic_manager" && r.location_id === l.id),
     );
 
+  const can = (l: Location, perm: Permission) =>
+    managesLocation(l) || customRoles.some((c) => c.location_id === l.id && (c.custom_roles?.permissions ?? []).includes(perm));
+
   return (
     <SessionContext.Provider
       value={{
@@ -120,9 +135,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         employments,
         locations,
         roles,
+        customRoles,
+        jobRoles,
         kiosk,
         reload,
         managesLocation,
+        can,
       }}
     >
       {children}

@@ -28,7 +28,8 @@ const emptyForm = (companyId: string): ClinicForm => ({
 });
 
 export function Clinics() {
-  const { t, data, reload, isOwner, managesCompany, managesLocation } = useSession();
+  const { t, lang, data, reload, isOwner, managesCompany, can } = useSession();
+  const managesLocation = (id: string) => can(id, "clinics");
   const [companyName, setCompanyName] = useState("");
   const [form, setForm] = useState<ClinicForm | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -137,7 +138,7 @@ export function Clinics() {
           )}
         </div>
 
-        {form && !editing && <ClinicEditor t={t} companies={editableCompanies(form.company_id)} form={form} setForm={setForm} onSave={() => saveClinic(form, null)} onCancel={() => setForm(null)} />}
+        {form && !editing && <ClinicEditor t={t} lang={lang} companies={editableCompanies(form.company_id)} form={form} setForm={setForm} onSave={() => saveClinic(form, null)} onCancel={() => setForm(null)} />}
 
         {data.locations.length === 0 && !form && <p className="muted">{t.none}</p>}
 
@@ -145,7 +146,7 @@ export function Clinics() {
           const company = data.companies.find((c) => c.id === l.company_id);
           const nets = wifi.filter((w) => w.location_id === l.id);
           if (editing === l.id && form) {
-            return <ClinicEditor key={l.id} t={t} companies={editableCompanies(form.company_id)} form={form} setForm={setForm} onSave={() => saveClinic(form, l.id)} onCancel={() => { setEditing(null); setForm(null); }} />;
+            return <ClinicEditor key={l.id} t={t} lang={lang} companies={editableCompanies(form.company_id)} form={form} setForm={setForm} onSave={() => saveClinic(form, l.id)} onCancel={() => { setEditing(null); setForm(null); }} />;
           }
           return (
             <article className="card stack" key={l.id}>
@@ -168,10 +169,16 @@ export function Clinics() {
                   <dd>{l.address ?? "—"}</dd>
                 </div>
                 <div>
-                  <dt>
-                    {t.latitude}, {t.longitude}
-                  </dt>
-                  <dd>{l.latitude !== null ? `${l.latitude.toFixed(5)}, ${l.longitude?.toFixed(5)}` : <span className="warn-text">{t.noCoords}</span>}</dd>
+                  <dt>{t.mapPosition}</dt>
+                  <dd>
+                    {l.latitude !== null && l.longitude !== null ? (
+                      <a href={googleMapsLink(l.latitude, l.longitude)} target="_blank" rel="noreferrer">
+                        {t.openInMaps}
+                      </a>
+                    ) : (
+                      <span className="warn-text">{t.positionMissing}</span>
+                    )}
+                  </dd>
                 </div>
                 <div>
                   <dt>{t.zone}</dt>
@@ -211,14 +218,85 @@ export function Clinics() {
   );
 }
 
-function ClinicEditor({ form: f, setForm: set, onSave, onCancel, t, companies }: {
+export function googleMapsLink(lat: number, lon: number): string {
+  return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
+}
+
+interface Place {
+  label: string;
+  province: Province | null;
+  lat: number;
+  lon: number;
+}
+
+const PROVINCE_NAMES: Record<string, Province> = {
+  quebec: "QC", "québec": "QC", ontario: "ON", alberta: "AB", "british columbia": "BC", "colombie-britannique": "BC",
+  manitoba: "MB", "new brunswick": "NB", "nouveau-brunswick": "NB", "newfoundland and labrador": "NL", "terre-neuve-et-labrador": "NL",
+  "nova scotia": "NS", "nouvelle-écosse": "NS", "northwest territories": "NT", "territoires du nord-ouest": "NT", nunavut: "NU",
+  "prince edward island": "PE", "île-du-prince-édouard": "PE", saskatchewan: "SK", yukon: "YT",
+};
+
+interface NominatimResult {
+  lat: string;
+  lon: string;
+  display_name: string;
+  address?: Record<string, string>;
+}
+
+// Address search: OpenStreetMap's free geocoder (one search per click, as its usage policy asks).
+async function searchAddress(query: string, lang: string): Promise<Place[]> {
+  const url = new URL("https://nominatim.openstreetmap.org/search");
+  url.search = new URLSearchParams({ q: query, format: "jsonv2", addressdetails: "1", limit: "5", countrycodes: "ca", "accept-language": lang }).toString();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status}`);
+  const rows = (await res.json()) as NominatimResult[];
+  return rows.map((r) => {
+    const a = r.address ?? {};
+    const street = [a.house_number, a.road].filter(Boolean).join(" ");
+    const city = a.city ?? a.town ?? a.village ?? a.municipality ?? a.suburb ?? "";
+    const province = PROVINCE_NAMES[(a.state ?? "").toLowerCase()] ?? null;
+    const label = [street, city, [province, a.postcode].filter(Boolean).join(" ")].filter(Boolean).join(", ") || r.display_name;
+    return { label, province, lat: Number(r.lat), lon: Number(r.lon) };
+  });
+}
+
+function ClinicEditor({ form: f, setForm: set, onSave, onCancel, t, lang, companies }: {
 form: ClinicForm;
 setForm: (f: ClinicForm) => void;
 onSave: () => void;
 onCancel: () => void;
 t: Strings;
+lang: string;
 companies: Company[];
 }) {
+  const [results, setResults] = useState<Place[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const lat = f.latitude ? Number(f.latitude) : null;
+  const lon = f.longitude ? Number(f.longitude) : null;
+
+  async function find() {
+    if (!f.address.trim()) return;
+    setSearching(true);
+    setSearchError("");
+    setResults(null);
+    try {
+      const found = await searchAddress(f.address.trim(), lang);
+      if (found.length === 0) setSearchError(t.noAddressResults);
+      else if (found.length === 1) choose(found[0]);
+      else setResults(found);
+    } catch {
+      setSearchError(t.addressSearchFailed);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function choose(p: Place) {
+    set({ ...f, address: p.label, latitude: String(p.lat), longitude: String(p.lon), province: p.province ?? f.province });
+    setResults(null);
+  }
+
   return (
     <form
       className="card stack"
@@ -252,18 +330,6 @@ companies: Company[];
             ))}
           </select>
         </label>
-        <label className="field" htmlFor="c-address">
-          <span>{t.address}</span>
-          <input id="c-address" value={f.address} onChange={(e) => set({ ...f, address: e.target.value })} />
-        </label>
-        <label className="field" htmlFor="c-lat">
-          <span>{t.latitude}</span>
-          <input id="c-lat" inputMode="decimal" placeholder="45.47650" value={f.latitude} onChange={(e) => set({ ...f, latitude: e.target.value })} />
-        </label>
-        <label className="field" htmlFor="c-lon">
-          <span>{t.longitude}</span>
-          <input id="c-lon" inputMode="decimal" placeholder="-75.70130" value={f.longitude} onChange={(e) => set({ ...f, longitude: e.target.value })} />
-        </label>
         <label className="field" htmlFor="c-zone">
           <span>{t.zone}</span>
           <select id="c-zone" value={f.geofence_radius_m} onChange={(e) => set({ ...f, geofence_radius_m: Number(e.target.value) })}>
@@ -279,7 +345,63 @@ companies: Company[];
           <input id="c-early" type="number" min={0} max={240} value={f.early_punch_limit_min} onChange={(e) => set({ ...f, early_punch_limit_min: Number(e.target.value) })} />
         </label>
       </div>
-      <p className="muted small">{t.coordsHint}</p>
+      <div className="stack">
+        <label className="field" htmlFor="c-address">
+          <span>{t.address}</span>
+          <div className="row">
+            <input
+              id="c-address"
+              className="grow"
+              value={f.address}
+              placeholder={t.addressPlaceholder}
+              onChange={(e) => set({ ...f, address: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  find();
+                }
+              }}
+            />
+            <button type="button" onClick={find} disabled={searching || !f.address.trim()}>
+              {searching ? t.searching : t.findOnMap}
+            </button>
+          </div>
+        </label>
+        {searchError && <p className="warn-text small">{searchError}</p>}
+        {results && (
+          <div className="stack">
+            <span className="muted small">{t.pickAddress}</span>
+            <ul className="plain results">
+              {results.map((r) => (
+                <li key={`${r.lat},${r.lon}`}>
+                  <button type="button" className="link" onClick={() => choose(r)}>
+                    {r.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {lat !== null && lon !== null ? (
+          <div className="stack">
+            <iframe
+              className="map"
+              title={t.mapPosition}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              src={`https://maps.google.com/maps?q=${lat},${lon}&z=17&output=embed`}
+            />
+            <p className="muted small">
+              {t.mapCheckHint}{" "}
+              <a href={googleMapsLink(lat, lon)} target="_blank" rel="noreferrer">
+                {t.openInMaps}
+              </a>
+            </p>
+          </div>
+        ) : (
+          <p className="warn-text small">{t.positionMissingHint}</p>
+        )}
+      </div>
       <div className="row">
         <button type="submit" className="primary">
           {t.save}

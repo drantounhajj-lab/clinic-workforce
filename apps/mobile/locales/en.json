@@ -1,5 +1,7 @@
 {
   "CFBundleDisplayName": "Clinic Workforce",
   "NSLocationWhenInUseUsageDescription": "Your location is checked only when you punch in or out, to confirm you are at the clinic.",
-  "NSCameraUsageDescription": "The camera scans the clinic code on the iPad when you punch in or out."
+  "NSCameraUsageDescription": "The camera scans the clinic code on the iPad when you punch in or out.",
+  "NSCalendarsUsageDescription": "Your shifts are added to a Clinic Workforce calendar, with the clinic's address, only if you turn this on in Setup.",
+  "NSCalendarsFullAccessUsageDescription": "Your shifts are added to a Clinic Workforce calendar, with the clinic's address, only if you turn this on in Setup."
 }

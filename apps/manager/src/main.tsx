@@ -1,32 +1,49 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Clinics } from "./pages/Clinics";
 import { Employees } from "./pages/Employees";
 import { Kiosks } from "./pages/Kiosks";
 import { CreateOrganization, Login } from "./pages/Login";
 import { Punches } from "./pages/Punches";
+import { Roles } from "./pages/Roles";
 import { Schedule } from "./pages/Schedule";
+import { Swaps } from "./pages/Swaps";
 import { personName, SessionProvider, useSession } from "./session";
-import { supabase } from "./supabase";
+import { type Permission, supabase } from "./supabase";
 import "./styles.css";
 
-type Page = "schedule" | "employees" | "clinics" | "kiosks" | "punches";
-const PAGES: Page[] = ["schedule", "employees", "clinics", "kiosks", "punches"];
+type Page = "schedule" | "swaps" | "employees" | "roles" | "clinics" | "kiosks" | "punches";
+const PAGES: Page[] = ["schedule", "swaps", "employees", "roles", "clinics", "kiosks", "punches"];
 
-function pageFromHash(): Page {
+function pageFromHash(): Page | null {
   const h = window.location.hash.replace("#", "") as Page;
-  return PAGES.includes(h) ? h : "schedule";
+  return PAGES.includes(h) ? h : null;
 }
 
 function Shell() {
-  const { t, lang, setLang, ready, session, data, noAccount, myRolesEmpty } = useShellState();
-  const [page, setPage] = useState<Page>(pageFromHash);
+  const { t, lang, setLang, ready, session, data, noAccount, visiblePages } = useShellState();
+  const [hashPage, setHashPage] = useState<Page | null>(pageFromHash);
+  const [pendingSwaps, setPendingSwaps] = useState(0);
 
   useEffect(() => {
-    const onHash = () => setPage(pageFromHash());
+    const onHash = () => setHashPage(pageFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  const canSwaps = visiblePages.includes("swaps");
+  const countSwaps = useCallback(async () => {
+    const { count } = await supabase.from("shift_swaps").select("id", { count: "exact", head: true }).eq("status", "pending_manager");
+    setPendingSwaps(count ?? 0);
+  }, []);
+  useEffect(() => {
+    if (!canSwaps) return;
+    countSwaps();
+    const timer = window.setInterval(countSwaps, 60_000);
+    return () => window.clearInterval(timer);
+  }, [canSwaps, countSwaps]);
+
+  const page: Page | undefined = hashPage && visiblePages.includes(hashPage) ? hashPage : visiblePages[0];
 
   const langToggle = (
     <div className="lang" role="group" aria-label="Language">
@@ -75,7 +92,7 @@ function Shell() {
 
   if (!data) return <p className="center-page muted">{t.loading}</p>;
 
-  if (myRolesEmpty) {
+  if (visiblePages.length === 0 || !page) {
     return (
       <>
         <header className="topbar">
@@ -100,9 +117,10 @@ function Shell() {
       <header className="topbar">
         <Brand t={t} />
         <nav className="nav" aria-label="Main">
-          {PAGES.map((p) => (
+          {visiblePages.map((p) => (
             <a key={p} href={`#${p}`} className={page === p ? "on" : ""} aria-current={page === p ? "page" : undefined}>
               {t.nav[p]}
+              {p === "swaps" && pendingSwaps > 0 && <span className="badge">{pendingSwaps}</span>}
             </a>
           ))}
         </nav>
@@ -114,7 +132,9 @@ function Shell() {
       </header>
       <main>
         {page === "schedule" && <Schedule />}
+        {page === "swaps" && <Swaps onChange={countSwaps} />}
         {page === "employees" && <Employees />}
+        {page === "roles" && <Roles />}
         {page === "clinics" && <Clinics />}
         {page === "kiosks" && <Kiosks />}
         {page === "punches" && <Punches />}
@@ -125,7 +145,17 @@ function Shell() {
 
 function useShellState() {
   const s = useSession();
-  return { ...s, myRolesEmpty: !!s.data && s.data.myRoles.length === 0 };
+  const has = (perm: Permission) => s.locationsWith(perm).length > 0;
+  const allowed: Record<Page, boolean> = {
+    schedule: has("schedule"),
+    swaps: has("schedule"),
+    employees: has("employees") || s.isOwner,
+    roles: s.isFullManager,
+    clinics: has("clinics") || (s.data?.companies ?? []).some((c) => s.managesCompany(c.id)) || s.isOwner,
+    kiosks: has("kiosks"),
+    punches: has("punches"),
+  };
+  return { ...s, visiblePages: s.data ? PAGES.filter((p) => allowed[p]) : [] };
 }
 
 function Brand({ t }: { t: { appName: string; managerArea: string } }) {

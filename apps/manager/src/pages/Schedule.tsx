@@ -37,7 +37,8 @@ const hhmm = (iso: string, tz: string) =>
 const paidMinutes = (s: Shift) => Math.max(0, (Date.parse(s.ends_at) - Date.parse(s.starts_at)) / 60000 - s.unpaid_break_minutes);
 
 export function Schedule() {
-  const { t, lang, data, managedLocations } = useSession();
+  const { t, lang, data, locationsWith } = useSession();
+  const managedLocations = locationsWith("schedule");
   const [locationId, setLocationId] = useState<string>(managedLocations[0]?.id ?? "");
   const location = managedLocations.find((l) => l.id === locationId) ?? managedLocations[0];
   const tz = location?.timezone ?? "America/Toronto";
@@ -317,6 +318,14 @@ export function Schedule() {
                     <tr key={e.id}>
                       <th scope="row" className="sticky person">
                         <span className="name">{personName(p)}</span>
+                        {e.job_role_id && (
+                          <span className="muted small">
+                            {(() => {
+                              const j = data.jobRoles.find((x) => x.id === e.job_role_id);
+                              return j ? (lang === "fr" ? j.name_fr : j.name_en) : "";
+                            })()}
+                          </span>
+                        )}
                         <span className={`meter ${over ? "over" : ""}`} aria-hidden="true">
                           <span style={{ width: `${target ? Math.min(100, (scheduled / target) * 100) : 0}%` }} />
                         </span>

@@ -334,3 +334,165 @@ describe("App Review demo account (supabase/snippets/review-account.sql)", () =>
     await expect(db.admin(sql)).rejects.toThrow(/already set up/);
   });
 });
+
+describe("punch-only staff, shift exchanges and custom roles", () => {
+  let ana: TestUser; // employee, Gatineau
+  let ben: TestUser; // employee, Gatineau
+  let coord: TestUser; // custom role "Coordonnatrice" (schedule only), Gatineau
+  const s: Record<string, string> = {};
+  const nextMonday = () => {
+    const d = new Date(`${thisMonday()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 7);
+    return d.toISOString().slice(0, 10);
+  };
+  const at = (day: number, hour: number) => {
+    const d = new Date(`${nextMonday()}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + day);
+    d.setUTCHours(hour);
+    return d.toISOString();
+  };
+  const addShift = async (emp: string, day: number, from: number, to: number) =>
+    (
+      await db.as<{ id: string }>(
+        julie,
+        "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5) returning id",
+        [ids.gat, nextMonday(), emp, at(day, from), at(day, to)],
+      )
+    )[0].id;
+  const ownerOf = async (shift: string) =>
+    (await db.admin<{ employment_id: string }>("select employment_id from public.shifts where id = $1", [shift]))[0].employment_id;
+
+  beforeAll(async () => {
+    const people = await db.as<{ id: string; email: string }>(
+      tony,
+      `insert into public.persons (first_name, last_name, email) values
+         ('Ana', 'Roy', 'ana@example.com'), ('Ben', 'Roy', 'ben@example.com'), ('Coord', 'Roy', 'coord@example.com')
+       returning id, email`,
+    );
+    for (const p of people) s[p.email.split("@")[0]] = p.id;
+    for (const who of ["ana", "ben", "coord"]) {
+      const [e] = await db.as<{ id: string }>(tony, "insert into public.employments (person_id, company_id) values ($1, $2) returning id", [s[who], ids.coQc]);
+      await db.as(tony, "insert into public.employment_locations (employment_id, location_id) values ($1, $2)", [e.id, ids.gat]);
+      s[`emp_${who}`] = e.id;
+    }
+    ana = await db.createUser("ana@example.com");
+    ben = await db.createUser("ben@example.com");
+    coord = await db.createUser("coord@example.com");
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.gat, nextMonday()]);
+    s.anaMon = await addShift(s.emp_ana, 0, 13, 21);
+    s.benTue = await addShift(s.emp_ben, 1, 13, 21);
+    s.anaWed = await addShift(s.emp_ana, 2, 13, 21);
+    s.benWed = await addShift(s.emp_ben, 2, 14, 18);
+  });
+
+  it("staff can't create, edit or decline shifts, only acknowledge them", async () => {
+    await expect(
+      db.as(ana, "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5)", [
+        ids.gat, nextMonday(), s.emp_ana, at(3, 13), at(3, 21),
+      ]),
+    ).rejects.toThrow(/row-level security/);
+    expect(await db.as(ana, "update public.shifts set ends_at = ends_at + interval '2 hours' where id = $1 returning id", [s.anaMon])).toHaveLength(0);
+    expect(await db.as(ana, "delete from public.shifts where id = $1 returning id", [s.anaMon])).toHaveLength(0);
+    expect(await db.rpc(ana, "respond_to_shift", [s.anaMon, "declined"])).toMatchObject({ ok: false });
+    expect(await db.rpc(ana, "respond_to_shift", [s.anaMon, "confirmed"])).toMatchObject({ ok: true });
+  });
+
+  it("gives a shift away: colleague accepts, manager approves", async () => {
+    const cands = await db.rpc<{ ok: boolean; colleagues: { employment_id: string; first_name: string }[] }>(ana, "swap_candidates", [s.anaMon]);
+    expect(cands.colleagues.map((c) => c.first_name)).toEqual(expect.arrayContaining(["Ben", "Marie"]));
+    expect(cands.colleagues.map((c) => c.first_name)).not.toContain("Ana");
+    expect(await db.rpc(ben, "swap_candidates", [s.anaMon])).toMatchObject({ ok: false });
+
+    const req = await db.rpc<{ ok: boolean; id: string }>(ana, "request_shift_swap", [s.anaMon, s.emp_ben, null, "Rendez-vous"]);
+    expect(req.ok).toBe(true);
+    expect(await db.rpc(ana, "request_shift_swap", [s.anaMon, s.emp_ben, null, null])).toMatchObject({ ok: false, reason: "already_requested" });
+    // Not visible to people outside the exchange; the manager can't approve before the colleague accepts
+    expect(await db.as(marie, "select * from public.shift_swaps")).toHaveLength(0);
+    expect(await db.rpc(julie, "decide_swap", [req.id, true, null])).toMatchObject({ ok: false, reason: "not_pending" });
+    expect(await db.rpc(ana, "respond_to_swap", [req.id, true])).toMatchObject({ ok: false });
+    expect(await db.rpc(ben, "respond_to_swap", [req.id, true])).toMatchObject({ ok: true });
+    expect(await db.rpc(ben, "decide_swap", [req.id, true, null])).toMatchObject({ ok: false, reason: "not_allowed" });
+    expect(await db.rpc(julie, "decide_swap", [req.id, true, "OK"])).toMatchObject({ ok: true });
+    expect(await ownerOf(s.anaMon)).toBe(s.emp_ben);
+  });
+
+  it("exchanges two shifts, and refuses one that would overlap", async () => {
+    // Ana gives Wednesday to Ben, who already works Wednesday afternoon: refused for overlap
+    const clash = await db.rpc<{ id: string }>(ana, "request_shift_swap", [s.anaWed, s.emp_ben, null, null]);
+    await db.rpc(ben, "respond_to_swap", [clash.id, true]);
+    expect(await db.rpc(julie, "decide_swap", [clash.id, true, null])).toMatchObject({ ok: false, reason: "overlap" });
+    expect(await db.rpc(julie, "decide_swap", [clash.id, false, "Conflit"])).toMatchObject({ ok: true });
+
+    // Ana's Wednesday for Ben's Tuesday
+    const ex = await db.rpc<{ ok: boolean; id: string }>(ana, "request_shift_swap", [s.anaWed, s.emp_ben, s.benTue, null]);
+    expect(ex.ok).toBe(true);
+    await db.rpc(ben, "respond_to_swap", [ex.id, true]);
+    expect(await db.rpc(julie, "decide_swap", [ex.id, true, null])).toMatchObject({ ok: false, reason: "overlap" });
+    // Remove the overlap (Ben's other Wednesday shift), then it goes through
+    await db.as(julie, "delete from public.shifts where id = $1", [s.benWed]);
+    expect(await db.rpc(julie, "decide_swap", [ex.id, true, null])).toMatchObject({ ok: true });
+    expect(await ownerOf(s.anaWed)).toBe(s.emp_ben);
+    expect(await ownerOf(s.benTue)).toBe(s.emp_ana);
+  });
+
+  it("lets the colleague refuse and the requester cancel", async () => {
+    const r1 = await db.rpc<{ id: string }>(ana, "request_shift_swap", [s.benTue, s.emp_ben, null, null]);
+    expect(await db.rpc(ben, "respond_to_swap", [r1.id, false])).toMatchObject({ ok: true });
+    const r2 = await db.rpc<{ id: string }>(ana, "request_shift_swap", [s.benTue, s.emp_ben, null, null]);
+    expect(await db.rpc(ana, "cancel_swap", [r2.id])).toMatchObject({ ok: true });
+    const rows = await db.as<{ status: string }>(ana, "select status from public.shift_swaps where id in ($1, $2) order by created_at", [r1.id, r2.id]);
+    expect(rows.map((r) => r.status)).toEqual(["refused_colleague", "cancelled"]);
+    // The phone app's list: names and times for both people, nothing for others
+    const mine = await db.rpc<{ incoming: boolean; requester_name: string; target_name: string; shift: { starts_at: string } }[]>(ben, "my_swaps", []);
+    expect(mine.length).toBeGreaterThanOrEqual(4);
+    expect(mine.every((m) => m.incoming)).toBe(true);
+    expect(mine[0]).toMatchObject({ requester_name: "Ana Roy", target_name: "Ben Roy" });
+    expect(await db.rpc(marie, "my_swaps", [])).toEqual([]);
+  });
+
+  it("custom roles grant only their permissions, at the clinics where they're assigned", async () => {
+    await expect(
+      db.as(julie, "insert into public.custom_roles (company_id, name, permissions) values ($1, 'X', '{schedule}')", [ids.coQc]),
+    ).rejects.toThrow(/row-level security/);
+    await expect(
+      db.as(tony, "insert into public.custom_roles (company_id, name, permissions) values ($1, 'Bad', '{everything}')", [ids.coQc]),
+    ).rejects.toThrow(/check constraint/);
+    const [role] = await db.as<{ id: string }>(
+      tony,
+      "insert into public.custom_roles (company_id, name, permissions) values ($1, 'Coordonnatrice', '{schedule}') returning id",
+      [ids.coQc],
+    );
+    // Clinic manager assigns it at her clinic; not at a clinic of another company
+    await db.as(julie, "insert into public.custom_role_assignments (person_id, custom_role_id, location_id) values ($1, $2, $3)", [s.coord, role.id, ids.gat]);
+    await expect(
+      db.as(tony, "insert into public.custom_role_assignments (person_id, custom_role_id, location_id) values ($1, $2, $3)", [s.coord, role.id, ids.ott]),
+    ).rejects.toThrow(/same company/);
+
+    // Schedule: yes
+    await db.as(coord, "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5)", [
+      ids.gat, nextMonday(), s.emp_ana, at(4, 13), at(4, 17),
+    ]);
+    expect(await db.as(coord, "select id from public.shifts where location_id = $1", [ids.ott])).toHaveLength(0);
+    // Employees, punches, clinic settings, iPads: no
+    await expect(
+      db.as(coord, "insert into public.employment_locations (employment_id, location_id) values ($1, $2)", [ids.empLuc, ids.gat]),
+    ).rejects.toThrow();
+    expect(await db.as(coord, "select * from public.punches where person_id <> app.my_person_id()")).toHaveLength(0);
+    expect(await db.as(coord, "update public.locations set geofence_radius_m = 999 where id = $1 returning id", [ids.gat])).toHaveLength(0);
+    expect(await db.rpc(coord, "kiosk_current_code", [ids.gat])).toMatchObject({ ok: false });
+
+    // ...and she can approve exchanges at that clinic
+    const shift = await addShift(s.emp_ana, 5, 13, 17);
+    const r = await db.rpc<{ id: string }>(ana, "request_shift_swap", [shift, s.emp_ben, null, null]);
+    await db.rpc(ben, "respond_to_swap", [r.id, true]);
+    expect(await db.rpc(coord, "decide_swap", [r.id, true, null])).toMatchObject({ ok: true });
+
+    // Removing the role removes the rights
+    await db.as(julie, "delete from public.custom_role_assignments where person_id = $1", [s.coord]);
+    await expect(
+      db.as(coord, "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5)", [
+        ids.gat, nextMonday(), s.emp_ana, at(6, 13), at(6, 17),
+      ]),
+    ).rejects.toThrow(/row-level security/);
+  });
+});

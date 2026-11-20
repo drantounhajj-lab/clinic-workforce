@@ -2,7 +2,7 @@
   "expo": {
     "name": "Clinic Workforce",
     "slug": "clinic-workforce",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -32,7 +32,10 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_WIFI_STATE",
-        "CAMERA"
+        "CAMERA",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "POST_NOTIFICATIONS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E3F1F3",
@@ -57,6 +60,19 @@
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Your shifts are added to a Clinic Workforce calendar, with the clinic's address, only if you turn this on in Setup."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#0B6E7F",
+          "mode": "production"
         }
       ],
       "expo-localization"

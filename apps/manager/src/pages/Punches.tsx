@@ -5,7 +5,8 @@ import { personName, useSession } from "../session";
 import { must, type Punch, supabase } from "../supabase";
 
 export function Punches() {
-  const { t, lang, data, managedLocations } = useSession();
+  const { t, lang, data, locationsWith } = useSession();
+  const managedLocations = locationsWith("punches");
   const [locationId, setLocationId] = useState(managedLocations[0]?.id ?? "");
   const location = managedLocations.find((l) => l.id === locationId) ?? managedLocations[0];
   const tz = location?.timezone ?? "America/Toronto";

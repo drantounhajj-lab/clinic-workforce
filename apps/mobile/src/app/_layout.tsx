@@ -1,14 +1,31 @@
 import { Tabs } from "expo-router/js-tabs";
 import { StatusBar } from "expo-status-bar";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect } from "react";
+import { ActivityIndicator, AppState, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Icon } from "../components/Icon";
 import { Kiosk } from "../components/Kiosk";
 import { Login } from "../components/Login";
 import { Button, Card, Muted } from "../components/ui";
 import { SessionProvider, useSession } from "../session";
+import { syncShifts } from "../shiftSync";
 import { supabase } from "../supabase";
 import { colors, space } from "../theme";
+
+/** Keeps the phone calendar and shift reminders up to date when the app opens or comes back. */
+function ShiftSyncer() {
+  const { t, lang, me, employments, locations } = useSession();
+  useEffect(() => {
+    if (!me) return;
+    const run = () => syncShifts({ employments, locations, t, lang }).catch(() => undefined);
+    run();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") run();
+    });
+    return () => sub.remove();
+  }, [me, employments, locations, t, lang]);
+  return null;
+}
 
 function Gate() {
   const { t, ready, session, isAnonymous, me } = useSession();
@@ -38,6 +55,8 @@ function Gate() {
   }
 
   return (
+    <>
+    <ShiftSyncer />
     <Tabs
       screenOptions={{
         headerStyle: { backgroundColor: colors.surface },
@@ -52,6 +71,7 @@ function Gate() {
       <Tabs.Screen name="schedule" options={{ title: t.tabs.schedule, tabBarIcon: ({ color }) => <Icon name="schedule" color={color} /> }} />
       <Tabs.Screen name="setup" options={{ title: t.tabs.setup, tabBarIcon: ({ color }) => <Icon name="setup" color={color} /> }} />
     </Tabs>
+    </>
   );
 }
 

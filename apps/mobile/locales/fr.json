@@ -1,5 +1,7 @@
 {
   "CFBundleDisplayName": "Clinic Workforce",
   "NSLocationWhenInUseUsageDescription": "Votre position est vérifiée seulement quand vous pointez, pour confirmer que vous êtes à la clinique.",
-  "NSCameraUsageDescription": "La caméra scanne le code de la clinique affiché sur l'iPad quand vous pointez."
+  "NSCameraUsageDescription": "La caméra scanne le code de la clinique affiché sur l'iPad quand vous pointez.",
+  "NSCalendarsUsageDescription": "Vos quarts sont ajoutés à un calendrier Clinic Workforce, avec l'adresse de la clinique, seulement si vous l'activez dans Réglages.",
+  "NSCalendarsFullAccessUsageDescription": "Vos quarts sont ajoutés à un calendrier Clinic Workforce, avec l'adresse de la clinique, seulement si vous l'activez dans Réglages."
 }

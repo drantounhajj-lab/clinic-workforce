@@ -3,9 +3,13 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useS
 import { type Lang, strings, type Strings } from "./i18n";
 import {
   type Company,
+  type CustomRole,
+  type CustomRoleAssignment,
   type Employment,
+  type JobRole,
   type Location,
   must,
+  type Permission,
   type Person,
   type RoleAssignment,
   supabase,
@@ -19,6 +23,9 @@ export interface AccountData {
   persons: Person[];
   roles: RoleAssignment[];
   employments: Employment[];
+  jobRoles: JobRole[];
+  customRoles: CustomRole[];
+  customAssignments: CustomRoleAssignment[];
 }
 
 interface Ctx {
@@ -35,6 +42,11 @@ interface Ctx {
   managesCompany: (companyId: string) => boolean;
   managesLocation: (locationId: string) => boolean;
   managedLocations: Location[];
+  /** Full manager of the clinic, or a custom role there that includes the permission. */
+  can: (locationId: string, perm: Permission) => boolean;
+  locationsWith: (perm: Permission) => Location[];
+  /** Owner, company admin or clinic manager somewhere (may edit positions). */
+  isFullManager: boolean;
 }
 
 const SessionContext = createContext<Ctx | null>(null);
@@ -82,12 +94,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     setNoAccount(false);
-    const [companies, locations, persons, roles, employments] = await Promise.all([
+    const [companies, locations, persons, roles, employments, jobRoles, customRoles, customAssignments] = await Promise.all([
       supabase.from("companies").select("*").order("legal_name"),
       supabase.from("locations").select("*").order("name"),
       supabase.from("persons").select("*").order("last_name"),
       supabase.from("role_assignments").select("*"),
       supabase.from("employments").select("*, employment_locations(location_id)"),
+      supabase.from("job_roles").select("*").order("name_fr"),
+      supabase.from("custom_roles").select("*").order("name"),
+      supabase.from("custom_role_assignments").select("*"),
     ]);
     const allRoles = must(roles) as RoleAssignment[];
     setData({
@@ -98,6 +113,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       persons: must(persons) as Person[],
       roles: allRoles,
       employments: must(employments) as Employment[],
+      jobRoles: must(jobRoles) as JobRole[],
+      customRoles: must(customRoles) as CustomRole[],
+      customAssignments: must(customAssignments) as CustomRoleAssignment[],
     });
   }, []);
 
@@ -129,10 +147,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return managesCompany(loc.company_id) || myRoles.some((r) => r.role === "clinic_manager" && r.location_id === locationId);
   };
   const managedLocations = (data?.locations ?? []).filter((l) => managesLocation(l.id));
+  const myCustom = (data?.customAssignments ?? []).filter((a) => a.person_id === data?.me.id);
+  const can = (locationId: string, perm: Permission) =>
+    managesLocation(locationId) ||
+    myCustom.some((a) => a.location_id === locationId && data?.customRoles.find((r) => r.id === a.custom_role_id)?.permissions.includes(perm));
+  const locationsWith = (perm: Permission) => (data?.locations ?? []).filter((l) => can(l.id, perm));
+  const isFullManager = myRoles.length > 0;
 
   return (
     <SessionContext.Provider
-      value={{ lang, setLang, t: strings[lang], session, ready, data, noAccount, reload, isOwner, managesCompany, managesLocation, managedLocations }}
+      value={{
+        lang, setLang, t: strings[lang], session, ready, data, noAccount, reload,
+        isOwner, managesCompany, managesLocation, managedLocations, can, locationsWith, isFullManager,
+      }}
     >
       {children}
     </SessionContext.Provider>

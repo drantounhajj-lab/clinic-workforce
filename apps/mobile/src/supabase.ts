@@ -36,6 +36,7 @@ export interface Location {
   name: string;
   province: string;
   timezone: string;
+  address: string | null;
   latitude: number | null;
   longitude: number | null;
   geofence_radius_m: number;
@@ -45,7 +46,53 @@ export interface Location {
 export interface Employment {
   id: string;
   company_id: string;
+  job_role_id: string | null;
   employment_locations: { location_id: string }[];
+}
+
+export type Permission = "schedule" | "employees" | "punches" | "clinics" | "kiosks";
+
+export interface JobRole {
+  id: string;
+  name_fr: string;
+  name_en: string;
+}
+
+/** A custom role the signed-in person holds at a clinic, with the role's permissions. */
+export interface MyCustomRole {
+  location_id: string;
+  custom_roles: { name: string; permissions: Permission[] } | null;
+}
+
+export type SwapStatus = "pending_colleague" | "pending_manager" | "approved" | "refused_colleague" | "refused_manager" | "cancelled";
+
+export interface SwapShift {
+  id: string;
+  location_id: string;
+  starts_at: string;
+  ends_at: string;
+}
+
+/** An exchange request as returned by my_swaps(). */
+export interface MySwap {
+  id: string;
+  status: SwapStatus;
+  incoming: boolean;
+  note: string | null;
+  manager_note: string | null;
+  created_at: string;
+  requester_name: string;
+  target_name: string;
+  shift: SwapShift;
+  target_shift: SwapShift | null;
+}
+
+export interface SwapColleague {
+  employment_id: string;
+  person_id: string;
+  first_name: string;
+  last_name: string;
+  shifts: SwapShift[];
 }
 
 export interface RoleAssignment {
@@ -62,6 +109,7 @@ export interface Shift {
   ends_at: string;
   unpaid_break_minutes: number;
   response: "pending" | "confirmed" | "declined";
+  job_role_id?: string | null;
 }
 
 export interface Punch {

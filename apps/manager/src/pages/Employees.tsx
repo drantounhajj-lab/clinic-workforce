@@ -1,9 +1,10 @@
 import { useState } from "react";
 import type { Strings } from "../i18n";
 import { personName, useSession } from "../session";
-import { type Company, type Employment, type Location, must, type Person, supabase } from "../supabase";
+import { type Company, type CustomRole, type Employment, type JobRole, type Location, must, type Person, supabase } from "../supabase";
 
-type RoleChoice = "employee" | "clinic_manager" | "company_admin";
+/** "employee", "clinic_manager", "company_admin", or "custom:<role id>" */
+type RoleChoice = string;
 
 interface EmployeeDraft {
   personId: string | null;
@@ -15,6 +16,7 @@ interface EmployeeDraft {
   company_id: string;
   locationIds: string[];
   role: RoleChoice;
+  jobRoleId: string;
   desired: string;
   min: string;
   max: string;
@@ -24,7 +26,9 @@ const toMinutes = (h: string) => (h.trim() === "" ? null : Math.round(Number(h.r
 const toHours = (m: number | null) => (m === null ? "" : String(m / 60));
 
 export function Employees() {
-  const { t, data, reload, isOwner, managesCompany, managesLocation, managedLocations } = useSession();
+  const { t, lang, data, reload, isOwner, managesCompany, managesLocation: fullyManages, can, locationsWith, isFullManager } = useSession();
+  const managesLocation = (id: string) => can(id, "employees");
+  const managedLocations = locationsWith("employees");
   const [draft, setDraft] = useState<EmployeeDraft | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -32,17 +36,26 @@ export function Employees() {
 
   const hireableCompanies = data.companies.filter((c) => managesCompany(c.id) || managedLocations.some((l) => l.company_id === c.id));
 
+  const clinicName = (id: string | null) => data!.locations.find((l) => l.id === id)?.name ?? "";
   function roleOf(p: Person): string[] {
-    return data!.roles
+    const builtIn = data!.roles
       .filter((r) => r.person_id === p.id)
       .map((r) =>
         r.role === "clinic_manager"
-          ? `${t.roles.clinic_manager} · ${data!.locations.find((l) => l.id === r.location_id)?.name ?? ""}`
+          ? `${t.roles.clinic_manager} · ${clinicName(r.location_id)}`
           : r.role === "company_admin"
             ? `${t.roles.company_admin} · ${data!.companies.find((c) => c.id === r.company_id)?.legal_name ?? ""}`
             : t.roles.owner,
       );
+    const custom = data!.customAssignments
+      .filter((a) => a.person_id === p.id)
+      .map((a) => `${data!.customRoles.find((r) => r.id === a.custom_role_id)?.name ?? ""} · ${clinicName(a.location_id)}`);
+    return [...builtIn, ...custom];
   }
+  const positionName = (id: string | null | undefined) => {
+    const j = data!.jobRoles.find((x) => x.id === id);
+    return j ? (lang === "fr" ? j.name_fr : j.name_en) : "";
+  };
 
   function startNew() {
     const company = hireableCompanies[0];
@@ -56,6 +69,7 @@ export function Employees() {
       company_id: company?.id ?? "",
       locationIds: [],
       role: "employee",
+      jobRoleId: "",
       desired: "",
       min: "",
       max: "",
@@ -75,7 +89,15 @@ export function Employees() {
       phone: p.phone ?? "",
       company_id: e?.company_id ?? hireableCompanies[0]?.id ?? "",
       locationIds: e?.employment_locations.map((x) => x.location_id) ?? [],
-      role: roles.some((r) => r.role === "company_admin") ? "company_admin" : roles.some((r) => r.role === "clinic_manager") ? "clinic_manager" : "employee",
+      role: roles.some((r) => r.role === "company_admin")
+        ? "company_admin"
+        : roles.some((r) => r.role === "clinic_manager")
+          ? "clinic_manager"
+          : (() => {
+              const a = data!.customAssignments.find((x) => x.person_id === p.id);
+              return a ? `custom:${a.custom_role_id}` : "employee";
+            })(),
+      jobRoleId: e?.job_role_id ?? "",
       desired: toHours(e?.desired_weekly_minutes ?? null),
       min: toHours(e?.min_weekly_minutes ?? null),
       max: toHours(e?.max_weekly_minutes ?? null),
@@ -96,7 +118,12 @@ export function Employees() {
       if (personId) must(await supabase.from("persons").update(personRow).eq("id", personId));
       else personId = (must(await supabase.from("persons").insert(personRow).select("id").single()) as { id: string }).id;
 
-      const hoursRow = { desired_weekly_minutes: toMinutes(d.desired), min_weekly_minutes: toMinutes(d.min), max_weekly_minutes: toMinutes(d.max) };
+      const hoursRow = {
+        desired_weekly_minutes: toMinutes(d.desired),
+        min_weekly_minutes: toMinutes(d.min),
+        max_weekly_minutes: toMinutes(d.max),
+        job_role_id: d.jobRoleId || null,
+      };
       let employmentId = d.employmentId;
       if (employmentId) must(await supabase.from("employments").update(hoursRow).eq("id", employmentId));
       else employmentId = (must(await supabase.from("employments").insert({ person_id: personId, company_id: d.company_id, ...hoursRow }).select("id").single()) as { id: string }).id;
@@ -107,7 +134,33 @@ export function Employees() {
       if (toAdd.length) must(await supabase.from("employment_locations").insert(toAdd.map((location_id) => ({ employment_id: employmentId, location_id }))));
       for (const id of toRemove) must(await supabase.from("employment_locations").delete().eq("employment_id", employmentId).eq("location_id", id));
 
-      // Roles for this company's clinics
+      // Roles: only owners, company admins and clinic managers change them
+      if (isFullManager) await saveRoles(d, personId!);
+
+      setDraft(null);
+      await reload();
+      setNotice(t.saved);
+    } catch (e) {
+      setError((e as Error).message);
+      await reload();
+    }
+  }
+
+  async function saveRoles(d: EmployeeDraft, personId: string) {
+    const companyClinics = data!.locations.filter((l) => l.company_id === d.company_id).map((l) => l.id);
+    // Custom roles at this company's clinics
+    const customId = d.role.startsWith("custom:") ? d.role.slice(7) : null;
+    const existingCustom = data!.customAssignments.filter((a) => a.person_id === personId && companyClinics.includes(a.location_id));
+    const wantedCustom = customId ? d.locationIds.filter((id) => fullyManages(id)) : [];
+    for (const a of existingCustom) {
+      const keep = a.custom_role_id === customId && wantedCustom.includes(a.location_id);
+      if (!keep && fullyManages(a.location_id)) must(await supabase.from("custom_role_assignments").delete().eq("id", a.id));
+    }
+    const customToAdd = wantedCustom.filter((loc) => !existingCustom.some((a) => a.custom_role_id === customId && a.location_id === loc));
+    if (customId && customToAdd.length) {
+      must(await supabase.from("custom_role_assignments").insert(customToAdd.map((location_id) => ({ person_id: personId, custom_role_id: customId, location_id }))));
+    }
+    {
       const existing = data!.roles.filter((r) => r.person_id === personId && r.role !== "owner");
       const wanted =
         d.role === "company_admin"
@@ -117,17 +170,11 @@ export function Employees() {
             : [];
       for (const r of existing) {
         const keep = wanted.some((w) => w.role === r.role && w.company_id === r.company_id && w.location_id === r.location_id);
-        if (!keep) must(await supabase.from("role_assignments").delete().eq("id", r.id));
+        const mayChange = isOwner || (r.role === "clinic_manager" && managesCompany(d.company_id));
+        if (!keep && mayChange) must(await supabase.from("role_assignments").delete().eq("id", r.id));
       }
       const toInsert = wanted.filter((w) => !existing.some((r) => r.role === w.role && r.company_id === w.company_id && r.location_id === w.location_id));
       if (toInsert.length) must(await supabase.from("role_assignments").insert(toInsert.map((w) => ({ ...w, person_id: personId }))));
-
-      setDraft(null);
-      await reload();
-      setNotice(t.saved);
-    } catch (e) {
-      setError((e as Error).message);
-      await reload();
     }
   }
 
@@ -166,6 +213,11 @@ export function Employees() {
           locations={data.locations}
           canEditClinic={managesLocation}
           canMakeAdmin={isOwner}
+          canMakeManager={managesCompany(draft.company_id)}
+          canChangeRole={isFullManager}
+          customRoles={data.customRoles.filter((r) => r.company_id === draft.company_id)}
+          jobRoles={data.jobRoles}
+          lang={lang}
           onSave={() => save(draft)}
           onCancel={() => setDraft(null)}
         />
@@ -178,6 +230,7 @@ export function Employees() {
               <th>{t.lastName}</th>
               <th>{t.email}</th>
               <th>{t.role}</th>
+              <th>{t.position}</th>
               <th>{t.clinicsWorked}</th>
               <th>{t.hoursDesired}</th>
               <th />
@@ -200,6 +253,7 @@ export function Employees() {
                     {p.phone && <div className="muted">{p.phone}</div>}
                   </td>
                   <td className="small">{roles.length ? roles.join(" · ") : t.roles.employee}</td>
+                  <td className="small">{positionName(emps[0]?.job_role_id) || "—"}</td>
                   <td className="small">{clinicNames || "—"}</td>
                   <td className="small mono">{emps[0]?.desired_weekly_minutes != null ? `${emps[0].desired_weekly_minutes / 60} h` : "—"}</td>
                   <td className="actions">
@@ -233,6 +287,11 @@ function EmployeeForm({
   locations,
   canEditClinic,
   canMakeAdmin,
+  canMakeManager,
+  canChangeRole,
+  customRoles,
+  jobRoles,
+  lang,
   onSave,
   onCancel,
 }: {
@@ -243,6 +302,11 @@ function EmployeeForm({
   locations: Location[];
   canEditClinic: (id: string) => boolean;
   canMakeAdmin: boolean;
+  canMakeManager: boolean;
+  canChangeRole: boolean;
+  customRoles: CustomRole[];
+  jobRoles: JobRole[];
+  lang: string;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -286,10 +350,26 @@ function EmployeeForm({
         </label>
         <label className="field" htmlFor="e-role">
           <span>{t.role}</span>
-          <select id="e-role" value={d.role} onChange={(e) => set({ role: e.target.value as RoleChoice })}>
+          <select id="e-role" value={d.role} disabled={!canChangeRole} onChange={(e) => set({ role: e.target.value })}>
             <option value="employee">{t.roles.employee}</option>
-            <option value="clinic_manager">{t.roles.clinic_manager}</option>
-            {canMakeAdmin && <option value="company_admin">{t.roles.company_admin}</option>}
+            {(canMakeManager || d.role === "clinic_manager") && <option value="clinic_manager">{t.roles.clinic_manager}</option>}
+            {(canMakeAdmin || d.role === "company_admin") && <option value="company_admin">{t.roles.company_admin}</option>}
+            {customRoles.map((r) => (
+              <option key={r.id} value={`custom:${r.id}`}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field" htmlFor="e-position">
+          <span>{t.position}</span>
+          <select id="e-position" value={d.jobRoleId} onChange={(e) => set({ jobRoleId: e.target.value })}>
+            <option value="">{t.noPosition}</option>
+            {jobRoles.map((j) => (
+              <option key={j.id} value={j.id}>
+                {lang === "fr" ? j.name_fr : j.name_en}
+              </option>
+            ))}
           </select>
         </label>
       </div>
