@@ -17,6 +17,8 @@ export interface Company {
   id: string;
   account_id: string;
   legal_name: string;
+  pay_frequency: "weekly" | "biweekly";
+  pay_period_anchor: string;
 }
 
 export interface Location {
@@ -69,6 +71,7 @@ export interface Employment {
   min_weekly_minutes: number | null;
   max_weekly_minutes: number | null;
   job_role_id: string | null;
+  payroll_number: string | null;
   employment_locations: { location_id: string }[];
 }
 
@@ -95,6 +98,7 @@ export interface Shift {
 }
 
 export interface AvailabilityRule {
+  id?: string;
   person_id: string;
   weekday: number;
   start_time: string;
@@ -120,6 +124,7 @@ export interface KioskDevice {
 export interface Punch {
   id: string;
   person_id: string;
+  employment_id: string;
   location_id: string;
   kind: "in" | "out";
   method: "phone_geofence" | "rotating_qr" | "kiosk_pin" | "manual";
@@ -176,4 +181,93 @@ export interface ShiftSwap {
   decided_at: string | null;
   manager_note: string | null;
   created_at: string;
+}
+
+export type RequestStatus = "pending" | "approved" | "refused" | "cancelled";
+export type TimeOffType = "vacation" | "sick" | "personal" | "unpaid" | "other";
+
+export interface TimeOffRequest {
+  id: string;
+  person_id: string;
+  type: TimeOffType;
+  start_date: string;
+  end_date: string;
+  start_time: string | null;
+  end_time: string | null;
+  paid_hours: number | null;
+  note: string | null;
+  status: RequestStatus;
+  manager_note: string | null;
+  created_at: string;
+}
+
+export interface PunchCorrection {
+  id: string;
+  person_id: string;
+  employment_id: string;
+  location_id: string;
+  punch_id: string | null;
+  kind: "in" | "out";
+  occurred_at: string;
+  reason: string;
+  status: RequestStatus;
+  requested_by: string | null;
+  manager_note: string | null;
+  created_at: string;
+}
+
+export interface TimesheetApproval {
+  id: string;
+  company_id: string;
+  person_id: string;
+  period_start: string;
+  period_end: string;
+  regular_minutes: number;
+  overtime_minutes: number;
+  approved_by: string | null;
+  approved_at: string;
+}
+
+export interface Credential {
+  id: string;
+  person_id: string;
+  name: string;
+  number: string | null;
+  issuer: string | null;
+  expires_on: string | null;
+  blocks_scheduling: boolean;
+}
+
+export interface CoverageRule {
+  id: string;
+  location_id: string;
+  job_role_id: string;
+  weekdays: number[];
+  start_time: string;
+  end_time: string;
+  min_count: number;
+}
+
+export interface ShiftClaim {
+  id: string;
+  shift_id: string;
+  employment_id: string;
+  status: RequestStatus;
+  created_at: string;
+}
+
+/** Shifts of the people I schedule at clinics I can't see (other companies), from busy_shifts(). */
+export interface BusyShifts {
+  employments: { id: string; person_id: string; company_id: string; job_role_id: string | null; location_ids: string[] }[];
+  shifts: {
+    id: string;
+    employment_id: string;
+    location_id: string;
+    week_start: string;
+    starts_at: string;
+    ends_at: string;
+    unpaid_break_minutes: number;
+    job_role_id: string | null;
+    published: boolean;
+  }[];
 }

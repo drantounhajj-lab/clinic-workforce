@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { Button, Card, Label, Muted, Segmented } from "../components/ui";
 import { useSession } from "../session";
+import { unregisterPush } from "../push";
 import { clearShiftSync, loadPrefs, REMINDER_CHOICES, type ReminderMinutes, removeCalendar, savePrefs, type SyncPrefs, syncShifts } from "../shiftSync";
 import { supabase } from "../supabase";
 import { colors, radius, space } from "../theme";
@@ -56,6 +57,7 @@ export default function SetupScreen() {
   }
 
   async function signOut() {
+    await unregisterPush();
     await clearShiftSync();
     await supabase.auth.signOut();
   }
@@ -211,6 +213,7 @@ export default function SetupScreen() {
           variant="dark"
           title={t.setUpKiosk}
           onPress={async () => {
+            await unregisterPush();
             await clearShiftSync();
             await supabase.auth.signOut();
             await supabase.auth.signInAnonymously();

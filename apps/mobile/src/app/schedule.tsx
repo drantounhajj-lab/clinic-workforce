@@ -19,14 +19,30 @@ export default function ScheduleScreen() {
   const [calendarOn, setCalendarOn] = useState(true);
   const [calendarMsg, setCalendarMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [openShifts, setOpenShifts] = useState<Shift[]>([]);
+  const [myClaims, setMyClaims] = useState<{ shift_id: string; status: string }[]>([]);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      const [list, mine, prefs] = await Promise.all([fetchUpcomingShifts(employments), supabase.rpc("my_swaps"), loadPrefs()]);
+      const locIds = [...new Set(employments.flatMap((e) => e.employment_locations.map((x) => x.location_id)))];
+      const none = Promise.resolve({ data: [] as unknown[] });
+      const [list, mine, prefs, open, weeks, claims] = await Promise.all([
+        fetchUpcomingShifts(employments),
+        supabase.rpc("my_swaps"),
+        loadPrefs(),
+        locIds.length
+          ? supabase.from("shifts").select("*").is("employment_id", null).in("location_id", locIds).gt("starts_at", new Date().toISOString()).order("starts_at").limit(30)
+          : none,
+        locIds.length ? supabase.from("schedule_weeks").select("location_id, week_start").eq("status", "published").in("location_id", locIds) : none,
+        supabase.from("shift_claims").select("shift_id, status"),
+      ]);
       setShifts(list);
       setSwaps((mine.data as MySwap[]) ?? []);
       setCalendarOn(prefs.calendar);
+      const published = new Set(((weeks.data as { location_id: string; week_start: string }[]) ?? []).map((w) => `${w.location_id}|${w.week_start}`));
+      setOpenShifts(((open.data as (Shift & { week_start: string })[]) ?? []).filter((x) => published.has(`${x.location_id}|${x.week_start}`)));
+      setMyClaims((claims.data as { shift_id: string; status: string }[]) ?? []);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -42,6 +58,14 @@ export default function ScheduleScreen() {
     setBusy(null);
     if (err || !data?.ok) setError(err?.message ?? t.error);
     else load();
+  }
+
+  async function claim(id: string, take: boolean) {
+    setBusy(id);
+    const { data, error: err } = await supabase.rpc(take ? "claim_open_shift" : "withdraw_claim", { p_shift_id: id });
+    setBusy(null);
+    if (err || !data?.ok) setError(err?.message ?? t.claimErrors[data?.reason] ?? t.error);
+    load();
   }
 
   async function answer(id: string, accept: boolean) {
@@ -142,6 +166,31 @@ export default function ScheduleScreen() {
               </View>
             </View>
           ))}
+        </Card>
+      )}
+
+      {openShifts.length > 0 && (
+        <Card>
+          <Label>{t.openShiftsTitle}</Label>
+          <Muted small>{t.openShiftsHint}</Muted>
+          {openShifts.map((o) => {
+            const c = myClaims.find((x) => x.shift_id === o.id && x.status === "pending");
+            return (
+              <View key={o.id} style={styles.request}>
+                <Text style={styles.body}>{when(o)}</Text>
+                <View style={styles.actions}>
+                  {c ? (
+                    <>
+                      <Tag text={t.claimSent} tone="warn" />
+                      <Button variant="ghost" title={t.withdraw} busy={busy === o.id} onPress={() => claim(o.id, false)} />
+                    </>
+                  ) : (
+                    <Button variant="primary" title={t.iCanTakeIt} busy={busy === o.id} onPress={() => claim(o.id, true)} />
+                  )}
+                </View>
+              </View>
+            );
+          })}
         </Card>
       )}
 

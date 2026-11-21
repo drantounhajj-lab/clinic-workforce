@@ -585,3 +585,197 @@ describe("review fixes: acknowledgements, changed shifts, duplicates", () => {
     await db.as(julie, open, [ids.gat, week(), at(4, 9), at(4, 12)]);
   });
 });
+
+describe("timesheets, requests, open shifts, cross-company view, notifications", () => {
+  let zoe: TestUser; // employee, Gatineau
+  let yan: TestUser; // employee at Gatineau (QC company) and Ottawa (ON company)
+  const e: Record<string, string> = {};
+  const p: Record<string, string> = {};
+  const week = () => {
+    const d = new Date(`${thisMonday()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 21);
+    return d.toISOString().slice(0, 10);
+  };
+  const at = (day: number, hour: number) => {
+    const d = new Date(`${week()}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + day);
+    d.setUTCHours(hour);
+    return d.toISOString();
+  };
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  beforeAll(async () => {
+    // Fake pg_net so notifications can be checked
+    await db.admin(`
+      create schema if not exists net;
+      create table if not exists net.calls (id bigserial primary key, url text, body jsonb);
+      create or replace function net.http_post(url text, body jsonb default '{}', params jsonb default '{}',
+        headers jsonb default '{}', timeout_milliseconds integer default 5000) returns bigint
+      language sql as $f$ insert into net.calls (url, body) values (url, body) returning id $f$;
+    `);
+    const people = await db.as<{ id: string; email: string }>(
+      tony,
+      "insert into public.persons (first_name, last_name, email) values ('Zoe', 'Roy', 'zoe@example.com'), ('Yan', 'Roy', 'yan@example.com') returning id, email",
+    );
+    for (const x of people) p[x.email.split("@")[0]] = x.id;
+    for (const [key, person, company, loc] of [
+      ["zoe", p.zoe, ids.coQc, ids.gat],
+      ["yanQc", p.yan, ids.coQc, ids.gat],
+      ["yanOn", p.yan, ids.coOn, ids.ott],
+    ]) {
+      const [row] = await db.as<{ id: string }>(tony, "insert into public.employments (person_id, company_id) values ($1, $2) returning id", [person, company]);
+      await db.as(tony, "insert into public.employment_locations (employment_id, location_id) values ($1, $2)", [row.id, loc]);
+      e[key] = row.id;
+    }
+    zoe = await db.createUser("zoe@example.com");
+    yan = await db.createUser("yan@example.com");
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.gat, week()]);
+    await db.as(tony, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.ott, week()]);
+  });
+
+  it("missed punches: employee asks, manager approves, originals are kept", async () => {
+    const req = await db.rpc<{ ok: boolean; id: string }>(zoe, "request_punch_correction", [ids.gat, "in", hoursAgo(5), "Oublié en arrivant"]);
+    expect(req.ok).toBe(true);
+    expect(await db.rpc(zoe, "request_punch_correction", [ids.ott, "in", hoursAgo(5), "x".repeat(5)])).toMatchObject({ reason: "not_assigned" });
+    expect(await db.rpc(zoe, "request_punch_correction", [ids.gat, "in", new Date(Date.now() + 3_600_000).toISOString(), "Plus tard"])).toMatchObject({ reason: "future" });
+    expect(await db.as(marie, "select * from public.punch_corrections")).toHaveLength(0);
+    expect(await db.rpc(zoe, "decide_punch_correction", [req.id, true, null])).toMatchObject({ ok: false, reason: "not_allowed" });
+    expect(await db.rpc(julie, "decide_punch_correction", [req.id, true, "OK"])).toMatchObject({ ok: true });
+    const [punch] = await db.admin<{ id: string; method: string; flags: string[] }>("select id, method, flags from public.punches where person_id = $1", [p.zoe]);
+    expect(punch).toMatchObject({ method: "manual", flags: ["correction"] });
+
+    // Correcting an existing punch keeps the original in the history
+    const fix = await db.rpc<{ id: string }>(zoe, "request_punch_correction", [ids.gat, "in", hoursAgo(6), "Arrivée réelle 1 h plus tôt", punch.id]);
+    await db.rpc(julie, "decide_punch_correction", [fix.id, true, null]);
+    const history = await db.as<{ action: string }>(julie, "select action from public.punch_history where punch_id = $1", [punch.id]);
+    expect(history).toEqual([{ action: "update" }]);
+    expect(await db.as(zoe, "select id from public.punch_history where punch_id = $1", [punch.id])).toHaveLength(1);
+
+    // A manager adds a forgotten "out"
+    expect(await db.rpc(julie, "manager_add_punch", [p.zoe, ids.gat, "out", hoursAgo(1), "Parti sans pointer"])).toMatchObject({ ok: true });
+    expect(await db.rpc(julie, "manager_add_punch", [p.zoe, ids.ott, "out", hoursAgo(1), "Pas sa clinique"])).toMatchObject({ ok: false });
+    // Notification recorded for the employee
+    const notes = await db.admin<{ title: string }>("select title from app.notifications where person_id = $1 order by created_at", [p.zoe]);
+    expect(notes.map((n) => n.title)).toContain("Correction de pointage approuvée");
+  });
+
+  it("timesheet approvals: payroll people only", async () => {
+    const row = [ids.coQc, p.zoe, "2026-11-01", "2026-11-15", 600, 0];
+    await expect(
+      db.as(zoe, "insert into public.timesheet_approvals (company_id, person_id, period_start, period_end, regular_minutes, overtime_minutes) values ($1, $2, $3, $4, $5, $6)", row),
+    ).rejects.toThrow(/row-level security/);
+    await db.as(julie, "insert into public.timesheet_approvals (company_id, person_id, period_start, period_end, regular_minutes, overtime_minutes) values ($1, $2, $3, $4, $5, $6)", row);
+    expect(await db.as(zoe, "select regular_minutes from public.timesheet_approvals")).toEqual([{ regular_minutes: 600 }]);
+  });
+
+  it("time off: request, decision with paid hours, cancel", async () => {
+    const r = await db.rpc<{ ok: boolean; id: string }>(zoe, "request_time_off", ["vacation", "2027-01-04", "2027-01-08", null, null, "Ski"]);
+    expect(r.ok).toBe(true);
+    expect(await db.rpc(zoe, "request_time_off", ["sick", "2027-01-05", "2027-01-04", null, null, null])).toMatchObject({ reason: "invalid_dates" });
+    expect(await db.rpc(yan, "decide_time_off", [r.id, true, 40, null])).toMatchObject({ ok: false });
+    expect(await db.rpc(julie, "decide_time_off", [r.id, true, 40, "Bonnes vacances"])).toMatchObject({ ok: true });
+    const [row] = await db.as<{ status: string; paid_hours: string }>(zoe, "select status, paid_hours from public.time_off_requests where id = $1", [r.id]);
+    expect(row).toMatchObject({ status: "approved", paid_hours: "40.00" });
+    expect(await db.rpc(zoe, "cancel_time_off", [r.id])).toMatchObject({ ok: true }); // future: can still cancel
+    expect(await db.as(marie, "select * from public.time_off_requests")).toHaveLength(0);
+  });
+
+  it("availability: new weekly availability replaces the old one when approved", async () => {
+    await db.as(zoe, "insert into public.availability_rules (person_id, weekday, start_time, end_time) values ($1, 0, '08:00', '16:00')", [p.zoe]);
+    await db.rpc(julie, "decide_availability", [p.zoe, true]);
+    await db.as(zoe, "insert into public.availability_rules (person_id, weekday, start_time, end_time) values ($1, 1, '09:00', '17:00')", [p.zoe]);
+    expect(await db.rpc(julie, "decide_availability", [p.zoe, true])).toMatchObject({ ok: true });
+    const rules = await db.as<{ weekday: number; status: string }>(zoe, "select weekday, status from public.availability_rules where person_id = $1", [p.zoe]);
+    expect(rules).toEqual([{ weekday: 1, status: "approved" }]);
+  });
+
+  it("open shifts: staff volunteer, a scheduler assigns, others are told no", async () => {
+    const [open] = await db.as<{ id: string }>(
+      julie,
+      "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, null, $3, $4) returning id",
+      [ids.gat, week(), at(2, 13), at(2, 17)],
+    );
+    expect(await db.as(zoe, "select id from public.shifts where id = $1", [open.id])).toHaveLength(1); // visible to staff
+    expect(await db.rpc(zoe, "claim_open_shift", [open.id])).toMatchObject({ ok: true });
+    expect(await db.rpc(yan, "claim_open_shift", [open.id])).toMatchObject({ ok: true });
+    expect(await db.rpc(luc, "claim_open_shift", [open.id])).toMatchObject({ ok: false, reason: "not_assigned" });
+    const asked = await db.rpc<{ ok: boolean; notified: number }>(julie, "request_coverage", [open.id]);
+    expect(asked.ok).toBe(true);
+    expect(asked.notified).toBeGreaterThanOrEqual(2);
+    expect(await db.as(julie, "select * from public.shift_claims where shift_id = $1", [open.id])).toHaveLength(2);
+    expect(await db.rpc(julie, "assign_open_shift", [open.id, e.zoe])).toMatchObject({ ok: true });
+    const [s] = await db.admin<{ employment_id: string; response: string }>("select employment_id, response from public.shifts where id = $1", [open.id]);
+    expect(s).toMatchObject({ employment_id: e.zoe, response: "confirmed" });
+    const claims = await db.as<{ status: string }>(yan, "select status from public.shift_claims where shift_id = $1", [open.id]);
+    expect(claims).toEqual([{ status: "refused" }]);
+    expect(await db.rpc(julie, "assign_open_shift", [open.id, e.yanQc])).toMatchObject({ ok: false, reason: "not_open" });
+  });
+
+  it("one schedule across companies: a QC manager sees the person's Ontario shifts", async () => {
+    await db.as(tony, "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5)", [
+      ids.ott, week(), e.yanOn, at(3, 13), at(3, 17),
+    ]);
+    // Julie can't read Ottawa shifts directly...
+    expect(await db.as(julie, "select id from public.shifts where location_id = $1", [ids.ott])).toHaveLength(0);
+    // ...but sees when the people she schedules are busy elsewhere
+    const busy = await db.rpc<{ shifts: { location_id: string }[]; employments: { company_id: string }[] }>(julie, "busy_shifts", [
+      [p.yan, ids.luc], at(0, 0), at(7, 0),
+    ]);
+    expect(busy.shifts.map((x) => x.location_id)).toContain(ids.ott);
+    expect(busy.employments.map((x) => x.company_id).sort()).toEqual([ids.coOn, ids.coQc].sort());
+    // Luc doesn't work at her clinic: nothing about him
+    expect(busy.employments.every((x) => x.company_id !== ids.coOn || busy.shifts.length > 0)).toBe(true);
+    const lucOnly = await db.rpc<{ shifts: unknown[]; employments: unknown[] }>(julie, "busy_shifts", [[ids.luc], at(0, 0), at(7, 0)]);
+    expect(lucOnly).toEqual({ shifts: [], employments: [] });
+  });
+
+  it("schedule changes are pushed to the people concerned, in their language", async () => {
+    expect(await db.rpc(yan, "register_push_token", ["ExponentPushToken[abcdefghijklmn]", "ios"])).toMatchObject({ ok: true });
+    expect(await db.rpc(yan, "register_push_token", ["not-a-token", "ios"])).toMatchObject({ ok: false });
+    await db.rpc(yan, "set_my_locale", ["en-CA"]);
+    await db.admin("delete from net.calls");
+    const [shift] = await db.as<{ id: string }>(
+      julie,
+      "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5) returning id",
+      [ids.gat, week(), e.yanQc, at(4, 13), at(4, 17)],
+    );
+    await db.as(julie, "update public.shifts set ends_at = $2 where id = $1", [shift.id, at(4, 18)]);
+    await db.as(julie, "delete from public.shifts where id = $1", [shift.id]);
+    const calls = await db.admin<{ body: { to: string; title: string; body: string }[] }>("select body from net.calls order by id");
+    expect(calls.map((c) => c.body[0].title)).toEqual(["New shift", "Shift changed", "Shift cancelled"]);
+    expect(calls[0].body[0].to).toBe("ExponentPushToken[abcdefghijklmn]");
+    expect(calls[1].body[0].body).toMatch(/Gatineau.*\(was /);
+    // Draft weeks don't notify
+    const draft = new Date(`${week()}T12:00:00Z`);
+    draft.setUTCDate(draft.getUTCDate() + 7);
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start) values ($1, $2)", [ids.gat, draft.toISOString().slice(0, 10)]);
+    await db.admin("delete from net.calls");
+    const d = new Date(draft);
+    d.setUTCHours(13);
+    const d2 = new Date(draft);
+    d2.setUTCHours(17);
+    await db.as(julie, "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5)", [
+      ids.gat, draft.toISOString().slice(0, 10), e.yanQc, d.toISOString(), d2.toISOString(),
+    ]);
+    expect(await db.admin("select * from net.calls")).toHaveLength(0);
+    // Publishing that week notifies once
+    await db.as(julie, "update public.schedule_weeks set status = 'published', published_at = now() where location_id = $1 and week_start = $2", [
+      ids.gat, draft.toISOString().slice(0, 10),
+    ]);
+    const published = await db.admin<{ body: { title: string }[] }>("select body from net.calls");
+    expect(published.map((c) => c.body[0].title)).toEqual(["Schedule published"]);
+    expect(await db.rpc(yan, "unregister_push_token", ["ExponentPushToken[abcdefghijklmn]"])).toMatchObject({ ok: true, removed: 1 });
+  });
+
+  it("coverage rules and credentials follow permissions", async () => {
+    const [pos] = await db.as<{ id: string }>(julie, "insert into public.job_roles (name_fr, name_en) values ('Réceptionniste', 'Receptionist') returning id");
+    await db.as(julie, "insert into public.coverage_rules (location_id, job_role_id, start_time, end_time, min_count) values ($1, $2, '08:00', '17:00', 1)", [ids.gat, pos.id]);
+    await expect(
+      db.as(julie, "insert into public.coverage_rules (location_id, job_role_id, start_time, end_time) values ($1, $2, '08:00', '17:00')", [ids.ott, pos.id]),
+    ).rejects.toThrow(/row-level security/);
+    await db.as(julie, "insert into public.credentials (person_id, name, expires_on) values ($1, 'Permis OPPQ', '2027-03-31')", [p.zoe]);
+    await expect(db.as(zoe, "insert into public.credentials (person_id, name) values ($1, 'Faux')", [p.zoe])).rejects.toThrow(/row-level security/);
+    expect(await db.as(zoe, "select name from public.credentials")).toEqual([{ name: "Permis OPPQ" }]);
+    expect(await db.as(luc, "select name from public.credentials")).toHaveLength(0);
+  });
+});

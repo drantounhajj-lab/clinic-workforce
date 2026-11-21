@@ -1,7 +1,7 @@
 import type { ColorValue } from "react-native";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 
-export function Icon({ name, color, size = 22 }: { name: "clock" | "schedule" | "setup"; color: ColorValue; size?: number }) {
+export function Icon({ name, color, size = 22 }: { name: "clock" | "schedule" | "requests" | "setup"; color: ColorValue; size?: number }) {
   const common = { stroke: color, strokeWidth: 2, fill: "none", strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
@@ -15,6 +15,12 @@ export function Icon({ name, color, size = 22 }: { name: "clock" | "schedule" | 
         <>
           <Rect x={3.5} y={5} width={17} height={15} rx={2} {...common} />
           <Path d="M3.5 10h17M8 3v4M16 3v4" {...common} />
+        </>
+      )}
+      {name === "requests" && (
+        <>
+          <Rect x={5} y={3.5} width={14} height={17} rx={2} {...common} />
+          <Path d="M9 8h6M9 12h6M9 16h3" {...common} />
         </>
       )}
       {name === "setup" && (

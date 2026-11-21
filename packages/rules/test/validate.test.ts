@@ -224,3 +224,53 @@ describe("validateSchedule", () => {
     expect(codes(run([s]))).toEqual(["province_rules_missing"]);
   });
 });
+
+describe("validateSchedule: travel, time off, coverage, expiring credentials", () => {
+  const withCoords: LocationInput[] = [
+    { id: "gatineau", companyId: "co-qc", province: "QC", timezone: TZ, latitude: 45.4765, longitude: -75.7013 },
+    { id: "hull", companyId: "co-qc", province: "QC", timezone: TZ, latitude: 45.4283, longitude: -75.7131 },
+    { id: "ottawa", companyId: "co-on", province: "ON", timezone: TZ, latitude: 45.4215, longitude: -75.6972 },
+    { id: "calgary", companyId: "co-ab", province: "AB", timezone: "America/Edmonton" },
+  ];
+
+  it("warns when two clinics are too close in time to travel between them", () => {
+    const r = run([shift("marie-qc", "gatineau", 0, "08:00", "12:00", 0), shift("marie-on", "ottawa", 0, "12:05", "16:00", 0)], { locations: withCoords });
+    const travel = r.issues.find((i) => i.code === "travel_time");
+    expect(travel?.details).toMatchObject({ gapMinutes: 5 });
+    expect(Number(travel?.details.requiredMinutes)).toBeGreaterThanOrEqual(15);
+    const ok = run([shift("marie-qc", "gatineau", 0, "08:00", "12:00", 0), shift("marie-on", "ottawa", 0, "13:00", "16:00", 0)], { locations: withCoords });
+    expect(codes(ok)).not.toContain("travel_time");
+  });
+
+  it("blocks a shift during approved time off, full day or part of a day", () => {
+    const vacation = run([shift("marie-qc", "gatineau", 1, "09:00", "15:00")], {
+      timeOff: [{ personId: "marie", startDate: addDays(WEEK, 0), endDate: addDays(WEEK, 2), type: "vacation" }],
+    });
+    expect(vacation.issues.find((i) => i.code === "time_off")?.severity).toBe("error");
+    expect(vacation.publishable).toBe(false);
+    const appointment = { personId: "marie", startDate: addDays(WEEK, 1), endDate: addDays(WEEK, 1), start: "16:00", end: "17:00", type: "personal" };
+    expect(codes(run([shift("marie-qc", "gatineau", 1, "09:00", "15:00")], { timeOff: [appointment] }))).not.toContain("time_off");
+    expect(codes(run([shift("marie-qc", "gatineau", 1, "09:00", "16:30")], { timeOff: [appointment] }))).toContain("time_off");
+  });
+
+  it("reports when a clinic lacks a position during the required hours", () => {
+    const emps: EmploymentInput[] = employments.map((e) => (e.id === "marie-qc" ? { ...e, jobRoleId: "reception" } : e));
+    const rule = { id: "r1", locationId: "gatineau", jobRoleId: "reception", weekdays: [0], start: "08:00", end: "17:00", minCount: 1 };
+    const r = run([shift("marie-qc", "gatineau", 0, "08:00", "12:00", 0)], { employments: emps, coverageRules: [rule] });
+    const gaps = r.issues.filter((i) => i.code === "coverage_gap");
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0].details).toMatchObject({ from: "12:00", to: "17:00", needed: 1, scheduled: 0 });
+    const full = run([shift("marie-qc", "gatineau", 0, "08:00", "17:00", 0)], { employments: emps, coverageRules: [rule] });
+    expect(codes(full)).not.toContain("coverage_gap");
+    // The shift's own position wins over the employee's
+    const other = run([{ ...shift("marie-qc", "gatineau", 0, "08:00", "17:00", 0), jobRoleId: "podiatrist" }], { employments: emps, coverageRules: [rule] });
+    expect(codes(other)).toContain("coverage_gap");
+  });
+
+  it("warns once when a credential expires within 30 days", () => {
+    const cred = { personId: "marie", name: "Permis OPPQ", expiresOn: addDays(WEEK, 10), blocksSchedulingWhenExpired: true };
+    const r = run([shift("marie-qc", "gatineau", 0, "09:00", "12:00", 0), shift("marie-qc", "gatineau", 1, "09:00", "12:00", 0)], { credentials: [cred] });
+    expect(r.issues.filter((i) => i.code === "credential_expiring")).toHaveLength(1);
+    expect(r.publishable).toBe(true);
+  });
+});

@@ -8,6 +8,9 @@ import { Kiosk } from "../components/Kiosk";
 import { Login } from "../components/Login";
 import { Button, Card, Muted } from "../components/ui";
 import { SessionProvider, useSession } from "../session";
+import * as Notifications from "expo-notifications";
+import { router } from "expo-router";
+import { registerForPush } from "../push";
 import { syncShifts } from "../shiftSync";
 import { supabase } from "../supabase";
 import { colors, space } from "../theme";
@@ -22,8 +25,27 @@ function ShiftSyncer() {
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") run();
     });
-    return () => sub.remove();
+    // A schedule notification arriving while the app is open: refresh the calendar and reminders
+    const received = Notifications.addNotificationReceivedListener(() => run());
+    return () => {
+      sub.remove();
+      received.remove();
+    };
   }, [me, employments, locations, t, lang]);
+
+  useEffect(() => {
+    if (!me) return;
+    registerForPush();
+    supabase.rpc("set_my_locale", { p_locale: lang === "fr" ? "fr-CA" : "en-CA" }).then(undefined, () => undefined);
+    // Tapping a notification opens the right tab
+    const tapped = Notifications.addNotificationResponseReceivedListener((response) => {
+      const type = (response.notification.request.content.data as { type?: string } | undefined)?.type;
+      if (type === "time_off" || type === "availability" || type === "punch_correction") router.navigate("/requests");
+      else if (type) router.navigate("/schedule");
+    });
+    return () => tapped.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me?.id]);
   return null;
 }
 
@@ -69,6 +91,7 @@ function Gate() {
     >
       <Tabs.Screen name="index" options={{ title: t.tabs.clock, tabBarIcon: ({ color }) => <Icon name="clock" color={color} /> }} />
       <Tabs.Screen name="schedule" options={{ title: t.tabs.schedule, tabBarIcon: ({ color }) => <Icon name="schedule" color={color} /> }} />
+      <Tabs.Screen name="requests" options={{ title: t.tabs.requests, tabBarIcon: ({ color }) => <Icon name="requests" color={color} /> }} />
       <Tabs.Screen name="setup" options={{ title: t.tabs.setup, tabBarIcon: ({ color }) => <Icon name="setup" color={color} /> }} />
     </Tabs>
     </>

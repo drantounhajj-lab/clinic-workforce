@@ -4,6 +4,7 @@ import {
   type Issue,
   localDate,
   localWeekStart,
+  type ValidationInput,
   validateSchedule,
   weekdayOf,
   zonedToUtc,
@@ -14,14 +15,29 @@ import { personName, useSession } from "../session";
 import {
   type AvailabilityException,
   type AvailabilityRule,
+  type BusyShifts,
+  type CoverageRule,
+  type Credential,
   type Employment,
+  type JobRole,
   type Location,
   must,
   type Person,
   type ScheduleWeek,
   type Shift,
+  type ShiftClaim,
   supabase,
+  type TimeOffRequest,
 } from "../supabase";
+
+/** A replacement candidate for a shift, after checking the rules as if they had it. */
+interface Candidate {
+  employmentId: string;
+  name: string;
+  claimed: boolean;
+  blocking: string[];
+  warnings: string[];
+}
 
 interface Draft {
   id: string | null;
@@ -47,6 +63,11 @@ export function Schedule() {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [rules, setRules] = useState<AvailabilityRule[]>([]);
   const [exceptions, setExceptions] = useState<AvailabilityException[]>([]);
+  const [busy, setBusy] = useState<BusyShifts>({ shifts: [], employments: [] });
+  const [timeOff, setTimeOff] = useState<TimeOffRequest[]>([]);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [coverage, setCoverage] = useState<CoverageRule[]>([]);
+  const [claims, setClaims] = useState<ShiftClaim[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
@@ -66,7 +87,8 @@ export function Schedule() {
       const to = zonedToUtc(addDays(week, 14), "00:00", tz).toISOString();
       const empIds = rows.map((e) => e.id);
       const personIds = [...new Set(rows.map((e) => e.person_id))];
-      const [w, atClinic, ofStaff, r, x] = await Promise.all([
+      const none = Promise.resolve({ data: [], error: null });
+      const [w, atClinic, ofStaff, r, x, b, off, creds, cov, cl] = await Promise.all([
         supabase.from("schedule_weeks").select("*").eq("location_id", location.id).eq("week_start", week).maybeSingle(),
         supabase.from("shifts").select("*").eq("location_id", location.id).gte("starts_at", from).lt("starts_at", to),
         empIds.length
@@ -76,6 +98,13 @@ export function Schedule() {
         personIds.length
           ? supabase.from("availability_exceptions").select("*").in("person_id", personIds).eq("status", "approved").gte("date", week).lt("date", addDays(week, 7))
           : Promise.resolve({ data: [], error: null }),
+        personIds.length ? supabase.rpc("busy_shifts", { p_person_ids: personIds, p_from: from, p_to: to }) : Promise.resolve({ data: { shifts: [], employments: [] }, error: null }),
+        personIds.length
+          ? supabase.from("time_off_requests").select("*").in("person_id", personIds).eq("status", "approved").lte("start_date", addDays(week, 14)).gte("end_date", addDays(week, -7))
+          : none,
+        personIds.length ? supabase.from("credentials").select("*").in("person_id", personIds) : none,
+        supabase.from("coverage_rules").select("*").eq("location_id", location.id),
+        supabase.from("shift_claims").select("*").eq("location_id", location.id).eq("status", "pending"),
       ]);
       setWeekRow(must(w) as ScheduleWeek | null);
       const merged = new Map<string, Shift>();
@@ -83,6 +112,11 @@ export function Schedule() {
       setShifts([...merged.values()]);
       setRules(must(r) as AvailabilityRule[]);
       setExceptions(must(x) as AvailabilityException[]);
+      setBusy((must(b) as BusyShifts) ?? { shifts: [], employments: [] });
+      setTimeOff(must(off) as TimeOffRequest[]);
+      setCredentials(must(creds) as Credential[]);
+      setCoverage(must(cov) as CoverageRule[]);
+      setClaims(must(cl) as ShiftClaim[]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -100,39 +134,104 @@ export function Schedule() {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const result = useMemo(() => {
+  // Shifts and employments the rules need: this clinic's, plus the same people's at other clinics and companies.
+  const allShifts: Shift[] = useMemo(() => {
+    const merged = new Map<string, Shift>(shifts.map((s) => [s.id, s]));
+    for (const b of busy.shifts) {
+      if (!merged.has(b.id)) {
+        merged.set(b.id, { ...b, location_id: b.location_id, response: "pending", notes: null, updated_at: b.starts_at } as unknown as Shift);
+      }
+    }
+    return [...merged.values()];
+  }, [shifts, busy]);
+
+  const baseInput: ValidationInput | null = useMemo(() => {
     if (!data || !location) return null;
-    const employments: EmploymentInput[] = data.employments.map((e) => ({
-      id: e.id,
-      personId: e.person_id,
-      companyId: e.company_id,
-      locationIds: e.employment_locations.map((x) => x.location_id),
-      desiredWeeklyMinutes: e.desired_weekly_minutes,
-      minWeeklyMinutes: e.min_weekly_minutes,
-      maxWeeklyMinutes: e.max_weekly_minutes,
-    }));
+    const employments = new Map<string, EmploymentInput>();
+    for (const e of data.employments) {
+      employments.set(e.id, {
+        id: e.id,
+        personId: e.person_id,
+        companyId: e.company_id,
+        locationIds: e.employment_locations.map((x) => x.location_id),
+        desiredWeeklyMinutes: e.desired_weekly_minutes,
+        minWeeklyMinutes: e.min_weekly_minutes,
+        maxWeeklyMinutes: e.max_weekly_minutes,
+        jobRoleId: e.job_role_id,
+      });
+    }
+    for (const e of busy.employments) {
+      if (!employments.has(e.id)) {
+        employments.set(e.id, { id: e.id, personId: e.person_id, companyId: e.company_id, locationIds: e.location_ids, jobRoleId: e.job_role_id });
+      }
+    }
     const changed = weekRow?.status === "published" && weekRow.published_at
       ? shifts.filter((s) => s.location_id === location.id && s.week_start === week && s.updated_at > weekRow.published_at!).map((s) => s.id)
       : [];
-    return validateSchedule({
-      locations: data.locations.map((l) => ({ id: l.id, companyId: l.company_id, province: l.province, timezone: l.timezone })),
-      employments,
-      shifts: shifts
-        .filter((s) => employments.some((e) => e.id === s.employment_id) || s.employment_id === null)
-        .map((s) => ({ id: s.id, employmentId: s.employment_id, locationId: s.location_id, startsAt: new Date(s.starts_at), endsAt: new Date(s.ends_at), unpaidBreakMinutes: s.unpaid_break_minutes })),
+    return {
+      locations: data.locations.map((l) => ({ id: l.id, companyId: l.company_id, province: l.province, timezone: l.timezone, latitude: l.latitude, longitude: l.longitude })),
+      employments: [...employments.values()],
+      shifts: allShifts
+        .filter((s) => s.employment_id === null || employments.has(s.employment_id))
+        .map((s) => ({
+          id: s.id,
+          employmentId: s.employment_id,
+          locationId: s.location_id,
+          startsAt: new Date(s.starts_at),
+          endsAt: new Date(s.ends_at),
+          unpaidBreakMinutes: s.unpaid_break_minutes,
+          jobRoleId: s.job_role_id,
+        })),
       availabilityRules: rules.map((r) => ({ personId: r.person_id, weekday: r.weekday, start: r.start_time.slice(0, 5), end: r.end_time.slice(0, 5), status: r.status })),
       availabilityExceptions: exceptions.map((x) => ({ personId: x.person_id, date: x.date, start: x.start_time?.slice(0, 5), end: x.end_time?.slice(0, 5), status: x.status })),
+      timeOff: timeOff.map((o) => ({ personId: o.person_id, startDate: o.start_date, endDate: o.end_date, start: o.start_time?.slice(0, 5), end: o.end_time?.slice(0, 5), type: o.type })),
+      credentials: credentials.map((c) => ({ personId: c.person_id, name: c.name, expiresOn: c.expires_on, blocksSchedulingWhenExpired: c.blocks_scheduling })),
+      coverageRules: coverage.map((c) => ({
+        id: c.id,
+        locationId: c.location_id,
+        jobRoleId: c.job_role_id,
+        weekdays: c.weekdays,
+        start: c.start_time.slice(0, 5),
+        end: c.end_time.slice(0, 5),
+        minCount: c.min_count,
+      })),
       changedShiftIds: changed,
       weeks: [week],
       now: new Date(),
-    });
-  }, [data, location, shifts, rules, exceptions, week, weekRow]);
+    };
+  }, [data, location, allShifts, shifts, rules, exceptions, timeOff, credentials, coverage, week, weekRow, busy]);
+
+  const result = useMemo(() => (baseInput ? validateSchedule(baseInput) : null), [baseInput]);
+
+  /** Everyone at this clinic who could take the shift, checked against the rules as if they had it. */
+  const candidatesFor = (shiftId: string): Candidate[] => {
+    if (!baseInput || !data) return [];
+    const target = baseInput.shifts.find((x) => x.id === shiftId);
+    if (!target) return [];
+    return rows
+      .filter((e) => e.id !== target.employmentId)
+      .map((e) => {
+        const trial = validateSchedule({ ...baseInput, shifts: baseInput.shifts.map((x) => (x.id === shiftId ? { ...x, employmentId: e.id } : x)), changedShiftIds: [] });
+        const mine = trial.issues.filter((i) => i.shiftIds.includes(shiftId) && i.code !== "coverage_gap");
+        const text = (i: Issue) => describe(i, allShifts, data.persons, data.employments, data.locations, data.jobRoles, t, lang, e.id);
+        return {
+          employmentId: e.id,
+          name: personName(data.persons.find((p) => p.id === e.person_id)),
+          claimed: claims.some((c) => c.shift_id === shiftId && c.employment_id === e.id),
+          blocking: mine.filter((i) => i.severity === "error").map(text),
+          warnings: mine.filter((i) => i.severity === "warning").map(text),
+        };
+      })
+      .sort((a, b) => Number(b.claimed) - Number(a.claimed) || a.blocking.length - b.blocking.length || a.warnings.length - b.warnings.length || a.name.localeCompare(b.name));
+  };
 
   if (!data) return null;
   if (!location) return <p className="card">{t.noClinics}</p>;
 
   const weekShifts = shifts.filter((s) => s.location_id === location.id && s.week_start === week);
-  const viewIssues = (result?.issues ?? []).filter((i) => i.shiftIds.some((id) => weekShifts.some((s) => s.id === id)));
+  const viewIssues = (result?.issues ?? []).filter(
+    (i) => i.shiftIds.some((id) => weekShifts.some((s) => s.id === id)) || (i.code === "coverage_gap" && i.details.locationId === location.id),
+  );
   const errors = viewIssues.filter((i) => i.severity === "error");
   const warnings = viewIssues.filter((i) => i.severity === "warning");
   const severity = new Map<string, "error" | "warning">();
@@ -163,6 +262,13 @@ export function Schedule() {
     } catch (e) {
       setError((e as Error).message);
     }
+  }
+
+  async function requestCoverage(id: string) {
+    const { data: res, error: err } = await supabase.rpc("request_coverage", { p_shift_id: id });
+    if (err) setError(err.message);
+    else if (!res?.ok) setToast(res?.reason === "not_open" ? t.coverageNotOpen : t.error);
+    else setToast(t.coverageRequested(res.notified));
   }
 
   async function deleteShift(id: string) {
@@ -268,9 +374,38 @@ export function Schedule() {
         {hhmm(s.starts_at, tz)}–{hhmm(s.ends_at, tz)}
       </span>
       {s.unpaid_break_minutes > 0 && <span className="chip-sub">{s.unpaid_break_minutes} min</span>}
-      {s.response !== "pending" && <span className={`chip-sub ${s.response}`}>{s.response === "confirmed" ? t.confirmed : t.declined}</span>}
+      {s.employment_id && weekRow?.status === "published" && (
+        <span className={`chip-sub ${s.response === "confirmed" ? "confirmed" : "pending"}`}>{s.response === "confirmed" ? t.acknowledged : t.notAcknowledged}</span>
+      )}
+      {!s.employment_id && claims.some((c) => c.shift_id === s.id) && (
+        <span className="chip-sub claims">{t.volunteers(claims.filter((c) => c.shift_id === s.id).length)}</span>
+      )}
     </button>
   );
+
+  const otherChips = (personId: string, date: string) =>
+    allShifts
+      .filter(
+        (s) =>
+          s.location_id !== location.id &&
+          s.employment_id &&
+          (data.employments.find((x) => x.id === s.employment_id)?.person_id ?? busy.employments.find((x) => x.id === s.employment_id)?.person_id) === personId &&
+          localDate(new Date(s.starts_at), tz) === date,
+      )
+      .map((s) => (
+        <span key={s.id} className="chip other" title={t.otherClinicShift}>
+          <span className="chip-time">
+            {hhmm(s.starts_at, tz)}–{hhmm(s.ends_at, tz)}
+          </span>
+          <span className="chip-sub">{data.locations.find((l) => l.id === s.location_id)?.name}</span>
+        </span>
+      ));
+
+  const timeOffLabel = (personId: string, date: string) => {
+    const o = timeOff.find((x) => x.person_id === personId && x.start_date <= date && x.end_date >= date);
+    if (!o) return null;
+    return `${t.timeOffTypes[o.type]}${o.start_time ? ` ${o.start_time.slice(0, 5)}–${o.end_time?.slice(0, 5)}` : ""}`;
+  };
 
   return (
     <div className="stack-lg">
@@ -356,7 +491,9 @@ export function Schedule() {
                           <td key={d}>
                             <div className="cell">
                               {hint && <span className={`avail ${hint === t.unavailable || hint === t.dayOff ? "no" : ""}`}>{hint}</span>}
+                              {timeOffLabel(p.id, d) && <span className="avail no">{timeOffLabel(p.id, d)}</span>}
                               {mine.filter((s) => localDate(new Date(s.starts_at), tz) === d).map(chip)}
+                              {otherChips(p.id, d)}
                               <button type="button" className="add" aria-label={`${t.addShift} · ${personName(p)} · ${d}`} onClick={() => setDraft({ id: null, employmentId: e.id, date: d, start: "08:00", end: "16:00", breakMin: 30 })}>
                                 +
                               </button>
@@ -397,7 +534,7 @@ export function Schedule() {
               {[...errors, ...warnings].map((i, idx) => (
                 <li key={idx} className={`issue ${i.severity}`}>
                   <span className="sev">{i.severity === "error" ? t.errorLabel : t.warningLabel}</span>
-                  <span>{describe(i, shifts, data.persons, data.employments, data.locations, t, lang)}</span>
+                  <span>{describe(i, allShifts, data.persons, data.employments, data.locations, data.jobRoles, t, lang)}</span>
                 </li>
               ))}
             </ul>
@@ -412,6 +549,9 @@ export function Schedule() {
           draft={draft}
           dates={dates}
           staff={rows.map((e) => ({ id: e.id, name: personName(data.persons.find((p) => p.id === e.person_id)) }))}
+          candidates={draft.id ? candidatesFor(draft.id) : []}
+          published={weekRow?.status === "published"}
+          onRequestCoverage={draft.id ? () => requestCoverage(draft.id!) : undefined}
           onCancel={() => setDraft(null)}
           onSave={saveShift}
           onDelete={deleteShift}
@@ -425,13 +565,24 @@ export function Schedule() {
   );
 }
 
-function describe(issue: Issue, shifts: Shift[], persons: Person[], employments: Employment[], locations: Location[], t: Strings, lang: Lang): string {
+function describe(
+  issue: Issue,
+  shifts: Shift[],
+  persons: Person[],
+  employments: Employment[],
+  locations: Location[],
+  jobRoles: JobRole[],
+  t: Strings,
+  lang: Lang,
+  asEmploymentId?: string,
+): string {
   const s = shifts.find((x) => x.id === issue.shiftIds[0]);
   const other = shifts.find((x) => x.id === issue.shiftIds[1]);
   const loc = locations.find((l) => l.id === s?.location_id);
   const tz = loc?.timezone ?? "America/Toronto";
   const person =
-    persons.find((p) => p.id === issue.personId) ?? persons.find((p) => p.id === employments.find((e) => e.id === s?.employment_id)?.person_id);
+    persons.find((p) => p.id === issue.personId) ??
+    persons.find((p) => p.id === employments.find((e) => e.id === (asEmploymentId ?? s?.employment_id))?.person_id);
   const who = person ? personName(person) : t.openShift;
   const when = s ? `${t.daysLong[weekdayOf(localDate(new Date(s.starts_at), tz))]} ${hhmm(s.starts_at, tz)}–${hhmm(s.ends_at, tz)}` : "";
   const h = (m: unknown) => hours(Number(m), lang);
@@ -468,6 +619,25 @@ function describe(issue: Issue, shifts: Shift[], persons: Person[], employments:
         : `${who} (${when}): changed less than 5 days ahead. In Quebec, the employee may refuse.`;
     case "province_rules_missing":
       return fr ? `${loc?.name} : aucune règle définie pour cette province.` : `${loc?.name}: no labour rules for this province yet.`;
+    case "time_off":
+      return fr ? `${who} est en congé approuvé (${when}).` : `${who} has approved time off (${when}).`;
+    case "travel_time": {
+      const a = locations.find((l) => l.id === d.fromLocationId)?.name;
+      const b = locations.find((l) => l.id === d.toLocationId)?.name;
+      return fr
+        ? `${who} : ${d.gapMinutes} min entre ${a} et ${b}, il en faut environ ${d.requiredMinutes} pour se déplacer.`
+        : `${who}: ${d.gapMinutes} min between ${a} and ${b}; about ${d.requiredMinutes} min needed to travel.`;
+    }
+    case "coverage_gap": {
+      const j = jobRoles.find((x) => x.id === d.jobRoleId);
+      const pos = j ? (fr ? j.name_fr : j.name_en) : "";
+      const day = t.daysLong[weekdayOf(String(d.date))];
+      return fr
+        ? `${locations.find((l) => l.id === d.locationId)?.name} : ${pos} manquant ${day} de ${d.from} à ${d.to} (${d.scheduled}/${d.needed}).`
+        : `${locations.find((l) => l.id === d.locationId)?.name}: ${pos} missing ${day} from ${d.from} to ${d.to} (${d.scheduled}/${d.needed}).`;
+    }
+    case "credential_expiring":
+      return fr ? `${who} : ${d.credential} expire le ${d.expiresOn}.` : `${who}: ${d.credential} expires on ${d.expiresOn}.`;
   }
 }
 
@@ -477,6 +647,9 @@ function ShiftDialog({
   draft,
   dates,
   staff,
+  candidates,
+  published,
+  onRequestCoverage,
   onCancel,
   onSave,
   onDelete,
@@ -486,6 +659,9 @@ function ShiftDialog({
   draft: Draft;
   dates: string[];
   staff: { id: string; name: string }[];
+  candidates: Candidate[];
+  published: boolean;
+  onRequestCoverage?: () => void;
   onCancel: () => void;
   onSave: (d: Draft) => void;
   onDelete: (id: string) => void;
@@ -547,6 +723,38 @@ function ShiftDialog({
           </label>
         </div>
         {!valid && <p className="error">{t.endAfterStart}</p>}
+        {d.id && candidates.length > 0 && (
+          <details className="cover" open={draft.employmentId === null}>
+            <summary>{t.findReplacement}</summary>
+            <p className="muted small">{t.findReplacementHint}</p>
+            <ul className="plain candidates">
+              {candidates.map((c) => (
+                <li key={c.employmentId} className={c.blocking.length ? "blocked" : c.warnings.length ? "warn" : "ok"}>
+                  <div className="row spread">
+                    <span>
+                      <strong>{c.name}</strong>
+                      {c.claimed && <span className="pill ok small-pill">{t.volunteered}</span>}
+                    </span>
+                    <button type="button" className="link" disabled={c.blocking.length > 0} onClick={() => setD({ ...d, employmentId: c.employmentId })}>
+                      {d.employmentId === c.employmentId ? t.chosen : t.choose}
+                    </button>
+                  </div>
+                  {c.blocking.length === 0 && c.warnings.length === 0 && <span className="ok-text small">{t.available}</span>}
+                  {[...c.blocking, ...c.warnings].map((m, i) => (
+                    <span key={i} className="small muted block">
+                      {m}
+                    </span>
+                  ))}
+                </li>
+              ))}
+            </ul>
+            {draft.employmentId === null && published && onRequestCoverage && (
+              <button type="button" onClick={onRequestCoverage}>
+                {t.askTeam}
+              </button>
+            )}
+          </details>
+        )}
         <div className="row">
           {d.id && (
             <button type="button" className="danger" onClick={() => onDelete(d.id!)}>

@@ -172,6 +172,14 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
         return `${who} (${when}) : annoncé moins de 5 jours à l'avance. Au Québec, l'employé peut refuser ce quart.`;
       case "province_rules_missing":
         return `${ctx.clinicName} : aucune règle définie pour cette province.`;
+      case "time_off":
+        return `${who} est en congé (${when}).`;
+      case "travel_time":
+        return `${who} n'a pas assez de temps pour se rendre d'une clinique à l'autre.`;
+      case "coverage_gap":
+        return `${ctx.clinicName} : poste non couvert de ${d.from} à ${d.to}.`;
+      case "credential_expiring":
+        return `${who} : ${d.credential} expire le ${d.expiresOn}.`;
     }
   }
   switch (issue.code) {
@@ -197,5 +205,13 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
       return `${who} (${when}): announced less than 5 days ahead. In Quebec, the employee may refuse this shift.`;
     case "province_rules_missing":
       return `${ctx.clinicName}: no labour rules defined for this province yet.`;
+    case "time_off":
+      return `${who} is on time off (${when}).`;
+    case "travel_time":
+      return `${who} doesn't have enough time to travel between clinics.`;
+    case "coverage_gap":
+      return `${ctx.clinicName}: position not covered from ${d.from} to ${d.to}.`;
+    case "credential_expiring":
+      return `${who}: ${d.credential} expires on ${d.expiresOn}.`;
   }
 }

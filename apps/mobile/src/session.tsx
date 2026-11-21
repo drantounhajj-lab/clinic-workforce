@@ -63,6 +63,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const setLang = (l: Lang) => {
     setLangState(l);
     AsyncStorage.setItem(LANG_KEY, l).catch(() => undefined);
+    // Notifications are written in the person's language on the server
+    supabase.rpc("set_my_locale", { p_locale: l === "fr" ? "fr-CA" : "en-CA" }).then(undefined, () => undefined);
   };
 
   const load = useCallback(async (s: Session | null) => {

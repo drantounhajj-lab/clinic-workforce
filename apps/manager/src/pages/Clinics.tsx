@@ -1,3 +1,4 @@
+import { CoverageRules, PaySettings } from "./Coverage";
 import { useEffect, useState } from "react";
 import { useSession } from "../session";
 import type { Strings } from "../i18n";
@@ -103,7 +104,10 @@ export function Clinics() {
         ) : (
           <ul className="plain">
             {data.companies.map((c) => (
-              <li key={c.id}>{c.legal_name}</li>
+              <li key={c.id} className="stack">
+                <strong>{c.legal_name}</strong>
+                <PaySettings companyId={c.id} />
+              </li>
             ))}
           </ul>
         )}
@@ -189,6 +193,7 @@ export function Clinics() {
                   <dd>{l.early_punch_limit_min} min</dd>
                 </div>
               </dl>
+              <CoverageRules locationId={l.id} />
               {managesLocation(l.id) && (
                 <div className="stack">
                   <strong>{t.wifi}</strong>

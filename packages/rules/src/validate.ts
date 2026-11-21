@@ -29,6 +29,9 @@ export interface LocationInput {
   companyId: string;
   province: Province;
   timezone: string;
+  /** Used to estimate travel time between clinics. */
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface EmploymentInput {
@@ -40,6 +43,8 @@ export interface EmploymentInput {
   desiredWeeklyMinutes?: number | null;
   minWeeklyMinutes?: number | null;
   maxWeeklyMinutes?: number | null;
+  /** Position (job title), used for coverage rules. */
+  jobRoleId?: string | null;
 }
 
 export interface ShiftInput {
@@ -50,6 +55,29 @@ export interface ShiftInput {
   startsAt: Date;
   endsAt: Date;
   unpaidBreakMinutes: number;
+  /** Position for this shift; defaults to the employment's position. */
+  jobRoleId?: string | null;
+}
+
+export interface TimeOffInput {
+  personId: string;
+  startDate: string; // "YYYY-MM-DD"
+  endDate: string; // inclusive
+  /** Both set: part of a single day. */
+  start?: string | null;
+  end?: string | null;
+  type: string;
+}
+
+export interface CoverageRuleInput {
+  id: string;
+  locationId: string;
+  jobRoleId: string;
+  /** 0 = Monday … 6 = Sunday */
+  weekdays: number[];
+  start: string; // "HH:MM"
+  end: string;
+  minCount: number;
 }
 
 export interface AvailabilityRuleInput {
@@ -89,6 +117,12 @@ export interface ValidationInput {
   availabilityRules?: AvailabilityRuleInput[];
   availabilityExceptions?: AvailabilityExceptionInput[];
   credentials?: CredentialInput[];
+  /** Approved time off. */
+  timeOff?: TimeOffInput[];
+  /** Minimum number of people per position at a clinic during a time window. */
+  coverageRules?: CoverageRuleInput[];
+  /** Days before expiry to start warning about a credential. Default 30. */
+  credentialWarningDays?: number;
   /** Account setting: count hours across companies for overtime and rest. */
   combineRelatedCompanyHours?: boolean;
   /** Shifts being added or changed now (for the Quebec 5-day notice warning). */
@@ -111,7 +145,11 @@ export type IssueCode =
   | "weekly_rest"
   | "meal_break_missing"
   | "short_notice_refusable"
-  | "province_rules_missing";
+  | "province_rules_missing"
+  | "time_off"
+  | "travel_time"
+  | "coverage_gap"
+  | "credential_expiring";
 
 export interface Issue {
   code: IssueCode;
@@ -195,6 +233,30 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
     }
   }
 
+  const expiringSeen = new Set<string>();
+  // 1b. Not enough time to travel between two clinics
+  for (const [personId, list] of byPerson) {
+    const sorted = [...list].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+    for (let i = 0; i + 1 < sorted.length; i++) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      if (a.locationId === b.locationId || b.startsAt < a.endsAt) continue;
+      if (!inReportedWeeks(a) && !inReportedWeeks(b)) continue;
+      const gapMinutes = Math.round((b.startsAt.getTime() - a.endsAt.getTime()) / MINUTE);
+      if (gapMinutes >= 12 * 60) continue;
+      const required = travelMinutes(loc(a.locationId), loc(b.locationId));
+      if (gapMinutes < required) {
+        issues.push({
+          code: "travel_time",
+          severity: "warning",
+          shiftIds: [a.id, b.id],
+          personId,
+          details: { fromLocationId: a.locationId, toLocationId: b.locationId, gapMinutes, requiredMinutes: required },
+        });
+      }
+    }
+  }
+
   for (const s of assigned.filter(inReportedWeeks)) {
     const e = emp(s.employmentId);
     const l = loc(s.locationId);
@@ -225,6 +287,37 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
           details: { credential: c.name, expiredOn: c.expiresOn },
         });
       }
+    }
+
+    // 3b. Credential expiring soon (once per person and credential)
+    const warnDays = input.credentialWarningDays ?? 30;
+    for (const c of input.credentials ?? []) {
+      if (c.personId !== e.personId || c.expiresOn === null || c.expiresOn < shiftDate) continue;
+      if (c.expiresOn > addDays(shiftDate, warnDays)) continue;
+      const key = `${e.personId}|${c.name}`;
+      if (expiringSeen.has(key)) continue;
+      expiringSeen.add(key);
+      issues.push({
+        code: "credential_expiring",
+        severity: "warning",
+        shiftIds: [s.id],
+        personId: e.personId,
+        employmentId: e.id,
+        details: { credential: c.name, expiresOn: c.expiresOn },
+      });
+    }
+
+    // 3c. Approved time off
+    const off = (input.timeOff ?? []).find((t) => t.personId === e.personId && overlapsTimeOff(s, t, l.timezone));
+    if (off) {
+      issues.push({
+        code: "time_off",
+        severity: "error",
+        shiftIds: [s.id],
+        personId: e.personId,
+        employmentId: e.id,
+        details: { type: off.type, startDate: off.startDate, endDate: off.endDate },
+      });
     }
 
     // 4. Availability
@@ -369,7 +462,90 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
     }
   }
 
+  // 10. Coverage by position
+  for (const rule of input.coverageRules ?? []) {
+    const l = locations.get(rule.locationId);
+    if (!l) continue;
+    const positionOf = (s: ShiftInput & { employmentId: string }) => s.jobRoleId ?? emp(s.employmentId).jobRoleId ?? null;
+    const staffed: Interval[] = assigned
+      .filter((s) => s.locationId === rule.locationId && positionOf(s) === rule.jobRoleId)
+      .map((s) => [s.startsAt.getTime(), s.endsAt.getTime()]);
+    for (const week of weeks) {
+      for (let d = 0; d < 7; d++) {
+        const date = addDays(week, d);
+        if (!rule.weekdays.includes(weekdayOf(date))) continue;
+        const from = zonedToUtc(date, rule.start, l.timezone).getTime();
+        const to = zonedToUtc(date, rule.end, l.timezone).getTime();
+        for (const [gs, ge, count] of coverageGaps(staffed, from, to, rule.minCount)) {
+          issues.push({
+            code: "coverage_gap",
+            severity: "warning",
+            shiftIds: [],
+            week,
+            details: {
+              locationId: rule.locationId,
+              jobRoleId: rule.jobRoleId,
+              date,
+              from: hhmm(new Date(gs), l.timezone),
+              to: hhmm(new Date(ge), l.timezone),
+              needed: rule.minCount,
+              scheduled: count,
+            },
+          });
+        }
+      }
+    }
+  }
+
   return { issues, hours, publishable: !issues.some((i) => i.severity === "error") };
+}
+
+function hhmm(d: Date, timezone: string): string {
+  const m = localMinuteOfDay(d, timezone);
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+/** Periods inside [from, to) where fewer than `min` intervals overlap, with the lowest count in each. */
+function coverageGaps(intervals: Interval[], from: number, to: number, min: number): Array<[number, number, number]> {
+  const points = new Set<number>([from, to]);
+  for (const [a, b] of intervals) {
+    if (a > from && a < to) points.add(a);
+    if (b > from && b < to) points.add(b);
+  }
+  const sorted = [...points].sort((x, y) => x - y);
+  const gaps: Array<[number, number, number]> = [];
+  for (let i = 0; i + 1 < sorted.length; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    const count = intervals.filter(([s, e]) => s <= a && e >= b).length;
+    if (count >= min) continue;
+    const last = gaps[gaps.length - 1];
+    if (last && last[1] === a) {
+      last[1] = b;
+      last[2] = Math.min(last[2], count);
+    } else gaps.push([a, b, count]);
+  }
+  return gaps;
+}
+
+/** Minutes needed to go from one clinic to another: about 50 km/h plus 10 minutes, at least 15; 30 if unknown. */
+export function travelMinutes(a: LocationInput, b: LocationInput): number {
+  if (a.latitude == null || a.longitude == null || b.latitude == null || b.longitude == null) return 30;
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  const km = 2 * 6371 * Math.asin(Math.sqrt(h));
+  return Math.max(15, Math.round((km / 50) * 60) + 10);
+}
+
+function overlapsTimeOff(s: ShiftInput, t: TimeOffInput, timezone: string): boolean {
+  for (const [date, startMin, endMin] of splitByLocalDay(s, timezone)) {
+    if (date < t.startDate || date > t.endDate) continue;
+    if (!t.start || !t.end) return true;
+    if (startMin < parseTime(t.end) && endMin > parseTime(t.start)) return true;
+  }
+  return false;
 }
 
 /**

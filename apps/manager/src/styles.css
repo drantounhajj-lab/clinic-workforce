@@ -180,3 +180,26 @@ main { display: grid; gap: 16px; }
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* Schedule: other clinics, acknowledgements, replacements */
+.chip.other { background: transparent; border: 1px dashed var(--line); color: var(--muted); cursor: default; }
+.chip-sub.pending { color: var(--warn); }
+.chip-sub.confirmed { color: var(--ok); }
+.chip-sub.claims { color: var(--accent); font-weight: 600; }
+.cover { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.cover summary { cursor: pointer; font-weight: 600; }
+.candidates { max-height: 260px; overflow: auto; margin: 8px 0; }
+.candidates li { padding: 6px 0; border-top: 1px solid var(--line); }
+.candidates li.blocked strong { color: var(--muted); }
+.candidates li.warn strong::after { content: " •"; color: var(--warn); }
+.block { display: block; }
+.small-pill { font-size: 10px; padding: 1px 6px; margin-left: 6px; }
+
+/* Timesheets and requests */
+.num { text-align: right; }
+.warn-row td { background: var(--warn-soft); }
+.table.inner { margin: 4px 0 8px; font-size: 13px; }
+.table tfoot td { border-top: 2px solid var(--line); }
+td.changed { background: var(--accent-soft); font-weight: 600; }
+.warn-card { border-color: var(--warn); background: var(--warn-soft); }
+.error-text { color: var(--error); }

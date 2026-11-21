@@ -5,6 +5,8 @@ import { Employees } from "./pages/Employees";
 import { Kiosks } from "./pages/Kiosks";
 import { CreateOrganization, Login } from "./pages/Login";
 import { Punches } from "./pages/Punches";
+import { Requests } from "./pages/Requests";
+import { Timesheets } from "./pages/Timesheets";
 import { Roles } from "./pages/Roles";
 import { Schedule } from "./pages/Schedule";
 import { Swaps } from "./pages/Swaps";
@@ -12,8 +14,8 @@ import { personName, SessionProvider, useSession } from "./session";
 import { type Permission, supabase } from "./supabase";
 import "./styles.css";
 
-type Page = "schedule" | "swaps" | "employees" | "roles" | "clinics" | "kiosks" | "punches";
-const PAGES: Page[] = ["schedule", "swaps", "employees", "roles", "clinics", "kiosks", "punches"];
+type Page = "schedule" | "swaps" | "requests" | "timesheets" | "employees" | "roles" | "clinics" | "kiosks" | "punches";
+const PAGES: Page[] = ["schedule", "swaps", "requests", "timesheets", "employees", "roles", "clinics", "kiosks", "punches"];
 
 function pageFromHash(): Page | null {
   const h = window.location.hash.replace("#", "") as Page;
@@ -24,6 +26,7 @@ function Shell() {
   const { t, lang, setLang, ready, session, data, noAccount, visiblePages } = useShellState();
   const [hashPage, setHashPage] = useState<Page | null>(pageFromHash);
   const [pendingSwaps, setPendingSwaps] = useState(0);
+  const [pendingRequests, setPendingRequests] = useState(0);
 
   useEffect(() => {
     const onHash = () => setHashPage(pageFromHash());
@@ -42,6 +45,23 @@ function Shell() {
     const timer = window.setInterval(countSwaps, 60_000);
     return () => window.clearInterval(timer);
   }, [canSwaps, countSwaps]);
+
+  const canRequests = visiblePages.includes("requests");
+  const countRequests = useCallback(async () => {
+    const [a, b, c] = await Promise.all([
+      supabase.from("time_off_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("availability_rules").select("person_id").eq("status", "pending"),
+      supabase.from("punch_corrections").select("id", { count: "exact", head: true }).eq("status", "pending"),
+    ]);
+    const people = new Set(((b.data as { person_id: string }[]) ?? []).map((x) => x.person_id)).size;
+    setPendingRequests((a.count ?? 0) + people + (c.count ?? 0));
+  }, []);
+  useEffect(() => {
+    if (!canRequests) return;
+    countRequests();
+    const timer = window.setInterval(countRequests, 60_000);
+    return () => window.clearInterval(timer);
+  }, [canRequests, countRequests]);
 
   const page: Page | undefined = hashPage && visiblePages.includes(hashPage) ? hashPage : visiblePages[0];
 
@@ -121,6 +141,7 @@ function Shell() {
             <a key={p} href={`#${p}`} className={page === p ? "on" : ""} aria-current={page === p ? "page" : undefined}>
               {t.nav[p]}
               {p === "swaps" && pendingSwaps > 0 && <span className="badge">{pendingSwaps}</span>}
+              {p === "requests" && pendingRequests > 0 && <span className="badge">{pendingRequests}</span>}
             </a>
           ))}
         </nav>
@@ -133,6 +154,8 @@ function Shell() {
       <main>
         {page === "schedule" && <Schedule />}
         {page === "swaps" && <Swaps onChange={countSwaps} />}
+        {page === "requests" && <Requests onChange={countRequests} />}
+        {page === "timesheets" && <Timesheets />}
         {page === "employees" && <Employees />}
         {page === "roles" && <Roles />}
         {page === "clinics" && <Clinics />}
@@ -149,9 +172,11 @@ function useShellState() {
   const allowed: Record<Page, boolean> = {
     schedule: has("schedule"),
     swaps: has("schedule"),
+    requests: has("schedule") || has("employees") || has("punches"),
+    timesheets: has("punches"),
     employees: has("employees") || s.isOwner,
     roles: s.isFullManager,
-    clinics: has("clinics") || (s.data?.companies ?? []).some((c) => s.managesCompany(c.id)) || s.isOwner,
+    clinics: has("clinics") || has("schedule") || (s.data?.companies ?? []).some((c) => s.managesCompany(c.id)) || s.isOwner,
     kiosks: has("kiosks"),
     punches: has("punches"),
   };

@@ -1,3 +1,4 @@
+import { CredentialsPanel, ExpiringCredentials } from "./Credentials";
 import { useState } from "react";
 import type { Strings } from "../i18n";
 import { personName, useSession } from "../session";
@@ -17,6 +18,7 @@ interface EmployeeDraft {
   locationIds: string[];
   role: RoleChoice;
   jobRoleId: string;
+  payrollNumber: string;
   desired: string;
   min: string;
   max: string;
@@ -70,6 +72,7 @@ export function Employees() {
       locationIds: [],
       role: "employee",
       jobRoleId: "",
+      payrollNumber: "",
       desired: "",
       min: "",
       max: "",
@@ -98,6 +101,7 @@ export function Employees() {
               return a ? `custom:${a.custom_role_id}` : "employee";
             })(),
       jobRoleId: e?.job_role_id ?? "",
+      payrollNumber: e?.payroll_number ?? "",
       desired: toHours(e?.desired_weekly_minutes ?? null),
       min: toHours(e?.min_weekly_minutes ?? null),
       max: toHours(e?.max_weekly_minutes ?? null),
@@ -123,6 +127,7 @@ export function Employees() {
         min_weekly_minutes: toMinutes(d.min),
         max_weekly_minutes: toMinutes(d.max),
         job_role_id: d.jobRoleId || null,
+        payroll_number: d.payrollNumber.trim() || null,
       };
       let employmentId = d.employmentId;
       if (employmentId) must(await supabase.from("employments").update(hoursRow).eq("id", employmentId));
@@ -195,6 +200,7 @@ export function Employees() {
   return (
     <div className="stack-lg">
       {(error || notice) && <p className={error ? "error" : "notice"}>{error || notice}</p>}
+      {!draft && <ExpiringCredentials />}
       <div className="row spread">
         <h2>{t.nav.employees}</h2>
         {!draft && (
@@ -389,6 +395,10 @@ function EmployeeForm({
         ))}
       </fieldset>
       <div className="grid3">
+        <label className="field" htmlFor="e-payroll">
+          <span>{t.payrollNumber}</span>
+          <input id="e-payroll" value={d.payrollNumber} onChange={(e) => set({ payrollNumber: e.target.value })} maxLength={40} />
+        </label>
         <label className="field" htmlFor="e-desired">
           <span>{t.hoursDesired}</span>
           <input id="e-desired" inputMode="decimal" value={d.desired} onChange={(e) => set({ desired: e.target.value })} />
@@ -403,6 +413,7 @@ function EmployeeForm({
         </label>
       </div>
       {!d.personId && <p className="muted small">{t.inviteHint}</p>}
+      {d.personId && <CredentialsPanel personId={d.personId} />}
       <div className="row">
         <button type="submit" className="primary">
           {t.save}
