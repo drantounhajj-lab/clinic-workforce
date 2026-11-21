@@ -17,6 +17,9 @@ const en = {
   wrongPassword: "Wrong email or password.",
   invalidEmail: "Enter a valid email address.",
   invalidCode: "Enter the code from the email.",
+  wrongCode: "Wrong or expired code. Use the code from the latest email, or ask for a new one.",
+  tooManyCodes: "A code was just sent. Wait a minute before asking for another one.",
+  networkError: "No connection. Check the internet and try again.",
   notInvitedTitle: "Your email isn't registered yet",
   notInvitedHint: "Ask your manager to add you with this email, then sign in again.",
   signOut: "Sign out",
@@ -146,6 +149,7 @@ const en = {
     colleague_not_allowed: "This colleague doesn't work at this clinic.",
     target_shift_not_allowed: "You can't take that shift.",
     already_requested: "There's already a request for this shift.",
+    wrong_position: "This colleague has a different position.",
   } as Record<string, string>,
   iSawIt: "Got it",
   // Calendar and reminders
@@ -172,7 +176,7 @@ const en = {
   iCanTakeIt: "I can take it",
   claimSent: "You volunteered",
   withdraw: "Withdraw",
-  claimErrors: { not_open: "This shift is no longer available.", not_assigned: "You don't work at this clinic.", busy: "You already work at that time." } as Record<string, string>,
+  claimErrors: { not_open: "This shift is no longer available.", not_assigned: "You don't work at this clinic.", busy: "You already work at that time.", wrong_position: "This shift is for another position." } as Record<string, string>,
   // Requests tab
   timeOffTab: "Time off",
   availabilityTab: "Availability",
@@ -225,6 +229,9 @@ const fr: typeof en = {
   wrongPassword: "Courriel ou mot de passe incorrect.",
   invalidEmail: "Entrez une adresse courriel valide.",
   invalidCode: "Entrez le code reçu par courriel.",
+  wrongCode: "Code incorrect ou expiré. Utilisez le code du dernier courriel reçu, ou demandez-en un nouveau.",
+  tooManyCodes: "Un code vient d'être envoyé. Attendez une minute avant d'en demander un autre.",
+  networkError: "Pas de connexion. Vérifiez Internet et réessayez.",
   notInvitedTitle: "Votre courriel n'est pas encore enregistré",
   notInvitedHint: "Demandez à votre gestionnaire de vous ajouter avec ce courriel, puis reconnectez-vous.",
   signOut: "Se déconnecter",
@@ -350,6 +357,7 @@ const fr: typeof en = {
     colleague_not_allowed: "Ce collègue ne travaille pas à cette clinique.",
     target_shift_not_allowed: "Vous ne pouvez pas prendre ce quart.",
     already_requested: "Il y a déjà une demande pour ce quart.",
+    wrong_position: "Ce collègue occupe un autre poste.",
   } as Record<string, string>,
   iSawIt: "J'ai vu",
   // Calendrier et rappels
@@ -376,7 +384,7 @@ const fr: typeof en = {
   iCanTakeIt: "Je peux le prendre",
   claimSent: "Vous êtes volontaire",
   withdraw: "Retirer",
-  claimErrors: { not_open: "Ce quart n'est plus disponible.", not_assigned: "Vous ne travaillez pas à cette clinique.", busy: "Vous travaillez déjà à ce moment-là." } as Record<string, string>,
+  claimErrors: { not_open: "Ce quart n'est plus disponible.", not_assigned: "Vous ne travaillez pas à cette clinique.", busy: "Vous travaillez déjà à ce moment-là.", wrong_position: "Ce quart est pour un autre poste." } as Record<string, string>,
   // Onglet Demandes
   timeOffTab: "Congé",
   availabilityTab: "Disponibilités",

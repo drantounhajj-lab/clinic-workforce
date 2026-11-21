@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatDate } from "../i18n";
+import { formatDate, friendly } from "../i18n";
 import { personName, useSession } from "../session";
 import { type Credential, must, supabase } from "../supabase";
 
@@ -15,7 +15,7 @@ export function CredentialsPanel({ personId }: { personId: string }) {
 
   const load = useCallback(async () => {
     const { data, error: err } = await supabase.from("credentials").select("*").eq("person_id", personId).order("expires_on");
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else setList((data as Credential[]) ?? []);
   }, [personId]);
 
@@ -40,14 +40,14 @@ export function CredentialsPanel({ personId }: { personId: string }) {
       setForm({ name: "", number: "", issuer: "", expires_on: "", blocks_scheduling: true });
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
   async function remove(id: string) {
     if (!window.confirm(t.confirmDeleteCredential)) return;
     const { error: err } = await supabase.from("credentials").delete().eq("id", id);
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else load();
   }
 

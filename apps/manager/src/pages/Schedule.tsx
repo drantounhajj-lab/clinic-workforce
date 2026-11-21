@@ -10,7 +10,7 @@ import {
   zonedToUtc,
 } from "@clinic-workforce/rules";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatDate, hours, type Lang, type Strings } from "../i18n";
+import { formatDate, hours, type Lang, type Strings, friendly } from "../i18n";
 import { personName, useSession } from "../session";
 import {
   type AvailabilityException,
@@ -46,6 +46,7 @@ interface Draft {
   start: string;
   end: string;
   breakMin: number;
+  jobRoleId: string | null;
 }
 
 const hhmm = (iso: string, tz: string) =>
@@ -118,7 +119,7 @@ export function Schedule() {
       setCoverage(must(cov) as CoverageRule[]);
       setClaims(must(cl) as ShiftClaim[]);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     } finally {
       setLoading(false);
     }
@@ -208,10 +209,16 @@ export function Schedule() {
     if (!baseInput || !data) return [];
     const target = baseInput.shifts.find((x) => x.id === shiftId);
     if (!target) return [];
+    // The position being covered: the shift's own, else the current employee's
+    const position = target.jobRoleId ?? baseInput.employments.find((x) => x.id === target.employmentId)?.jobRoleId ?? null;
     return rows
       .filter((e) => e.id !== target.employmentId)
       .map((e) => {
-        const trial = validateSchedule({ ...baseInput, shifts: baseInput.shifts.map((x) => (x.id === shiftId ? { ...x, employmentId: e.id } : x)), changedShiftIds: [] });
+        const trial = validateSchedule({
+          ...baseInput,
+          shifts: baseInput.shifts.map((x) => (x.id === shiftId ? { ...x, employmentId: e.id, jobRoleId: position } : x)),
+          changedShiftIds: [],
+        });
         const mine = trial.issues.filter((i) => i.shiftIds.includes(shiftId) && i.code !== "coverage_gap");
         const text = (i: Issue) => describe(i, allShifts, data.persons, data.employments, data.locations, data.jobRoles, t, lang, e.id);
         return {
@@ -254,19 +261,28 @@ export function Schedule() {
         starts_at: zonedToUtc(d.date, d.start, tz).toISOString(),
         ends_at: zonedToUtc(d.date, d.end, tz).toISOString(),
         unpaid_break_minutes: d.breakMin,
+        job_role_id: d.jobRoleId,
       };
-      if (d.id) must(await supabase.from("shifts").update(row).eq("id", d.id));
+      const before = d.id ? shifts.find((x) => x.id === d.id) : undefined;
+      if (before && before.employment_id === null && d.employmentId) {
+        // Filling an open shift: save the hours first, then assign, so volunteers are answered
+        // and a volunteer who gets it doesn't have to acknowledge it again.
+        must(await supabase.from("shifts").update({ ...row, employment_id: null }).eq("id", before.id));
+        const { data: res, error: err } = await supabase.rpc("assign_open_shift", { p_shift_id: before.id, p_employment_id: d.employmentId });
+        if (err) throw err;
+        if (!res?.ok) throw new Error(t.assignErrors[res?.reason] ?? t.error);
+      } else if (d.id) must(await supabase.from("shifts").update(row).eq("id", d.id));
       else must(await supabase.from("shifts").insert(row));
       setDraft(null);
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
   async function requestCoverage(id: string) {
     const { data: res, error: err } = await supabase.rpc("request_coverage", { p_shift_id: id });
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else if (!res?.ok) setToast(res?.reason === "not_open" ? t.coverageNotOpen : t.error);
     else setToast(t.coverageRequested(res.notified));
   }
@@ -277,7 +293,7 @@ export function Schedule() {
       setDraft(null);
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
@@ -327,7 +343,7 @@ export function Schedule() {
       setToast(t.copied(rowsToInsert.length));
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
@@ -348,7 +364,7 @@ export function Schedule() {
       setToast(t.publishedToast);
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
@@ -368,12 +384,18 @@ export function Schedule() {
       type="button"
       key={s.id}
       className={`chip ${severity.get(s.id) ?? ""}`}
-      onClick={() => setDraft({ id: s.id, employmentId: s.employment_id, date: localDate(new Date(s.starts_at), tz), start: hhmm(s.starts_at, tz), end: hhmm(s.ends_at, tz), breakMin: s.unpaid_break_minutes })}
+      onClick={() => setDraft({ id: s.id, employmentId: s.employment_id, date: localDate(new Date(s.starts_at), tz), start: hhmm(s.starts_at, tz), end: hhmm(s.ends_at, tz), breakMin: s.unpaid_break_minutes, jobRoleId: s.job_role_id })}
     >
       <span className="chip-time">
         {hhmm(s.starts_at, tz)}–{hhmm(s.ends_at, tz)}
       </span>
       {s.unpaid_break_minutes > 0 && <span className="chip-sub">{s.unpaid_break_minutes} min</span>}
+      {s.job_role_id && (!s.employment_id || s.job_role_id !== data.employments.find((e) => e.id === s.employment_id)?.job_role_id) && (
+        <span className="chip-sub">{(() => {
+          const j = data.jobRoles.find((x) => x.id === s.job_role_id);
+          return j ? (lang === "fr" ? j.name_fr : j.name_en) : "";
+        })()}</span>
+      )}
       {s.employment_id && weekRow?.status === "published" && (
         <span className={`chip-sub ${s.response === "confirmed" ? "confirmed" : "pending"}`}>{s.response === "confirmed" ? t.acknowledged : t.notAcknowledged}</span>
       )}
@@ -494,7 +516,7 @@ export function Schedule() {
                               {timeOffLabel(p.id, d) && <span className="avail no">{timeOffLabel(p.id, d)}</span>}
                               {mine.filter((s) => localDate(new Date(s.starts_at), tz) === d).map(chip)}
                               {otherChips(p.id, d)}
-                              <button type="button" className="add" aria-label={`${t.addShift} · ${personName(p)} · ${d}`} onClick={() => setDraft({ id: null, employmentId: e.id, date: d, start: "08:00", end: "16:00", breakMin: 30 })}>
+                              <button type="button" className="add" aria-label={`${t.addShift} · ${personName(p)} · ${d}`} onClick={() => setDraft({ id: null, employmentId: e.id, date: d, start: "08:00", end: "16:00", breakMin: 30, jobRoleId: null })}>
                                 +
                               </button>
                             </div>
@@ -512,7 +534,7 @@ export function Schedule() {
                     <td key={d}>
                       <div className="cell">
                         {weekShifts.filter((s) => s.employment_id === null && localDate(new Date(s.starts_at), tz) === d).map(chip)}
-                        <button type="button" className="add" aria-label={`${t.addShift} · ${t.openShift} · ${d}`} onClick={() => setDraft({ id: null, employmentId: null, date: d, start: "08:00", end: "16:00", breakMin: 30 })}>
+                        <button type="button" className="add" aria-label={`${t.addShift} · ${t.openShift} · ${d}`} onClick={() => setDraft({ id: null, employmentId: null, date: d, start: "08:00", end: "16:00", breakMin: 30, jobRoleId: null })}>
                           +
                         </button>
                       </div>
@@ -549,6 +571,7 @@ export function Schedule() {
           draft={draft}
           dates={dates}
           staff={rows.map((e) => ({ id: e.id, name: personName(data.persons.find((p) => p.id === e.person_id)) }))}
+          positions={data.jobRoles.map((j) => ({ id: j.id, name: lang === "fr" ? j.name_fr : j.name_en }))}
           candidates={draft.id ? candidatesFor(draft.id) : []}
           published={weekRow?.status === "published"}
           onRequestCoverage={draft.id ? () => requestCoverage(draft.id!) : undefined}
@@ -636,8 +659,19 @@ function describe(
         ? `${locations.find((l) => l.id === d.locationId)?.name} : ${pos} manquant ${day} de ${d.from} à ${d.to} (${d.scheduled}/${d.needed}).`
         : `${locations.find((l) => l.id === d.locationId)?.name}: ${pos} missing ${day} from ${d.from} to ${d.to} (${d.scheduled}/${d.needed}).`;
     }
-    case "credential_expiring":
-      return fr ? `${who} : ${d.credential} expire le ${d.expiresOn}.` : `${who}: ${d.credential} expires on ${d.expiresOn}.`;
+    case "credential_expiring": {
+      const on = formatDate(String(d.expiresOn), lang, { day: "numeric", month: "long", year: "numeric" });
+      return fr ? `${who} : ${d.credential} expire le ${on}.` : `${who}: ${d.credential} expires on ${on}.`;
+    }
+    case "position_mismatch": {
+      const name = (id: unknown) => {
+        const j = jobRoles.find((x) => x.id === id);
+        return j ? (fr ? j.name_fr : j.name_en) : "";
+      };
+      return fr
+        ? `${who} (${when}) : quart de ${name(d.shiftJobRoleId)}, son poste est ${name(d.employeeJobRoleId)}.`
+        : `${who} (${when}): ${name(d.shiftJobRoleId)} shift, their position is ${name(d.employeeJobRoleId)}.`;
+    }
   }
 }
 
@@ -647,6 +681,7 @@ function ShiftDialog({
   draft,
   dates,
   staff,
+  positions,
   candidates,
   published,
   onRequestCoverage,
@@ -659,6 +694,7 @@ function ShiftDialog({
   draft: Draft;
   dates: string[];
   staff: { id: string; name: string }[];
+  positions: { id: string; name: string }[];
   candidates: Candidate[];
   published: boolean;
   onRequestCoverage?: () => void;
@@ -698,6 +734,19 @@ function ShiftDialog({
             ))}
           </select>
         </label>
+        {positions.length > 0 && (
+          <label className="field" htmlFor="s-pos">
+            <span>{t.shiftPosition}</span>
+            <select id="s-pos" value={d.jobRoleId ?? ""} onChange={(e) => setD({ ...d, jobRoleId: e.target.value || null })}>
+              <option value="">{d.employmentId ? t.employeesPosition : t.anyPosition}</option>
+              {positions.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="field" htmlFor="s-day">
           <span>{t.day}</span>
           <select id="s-day" value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })}>

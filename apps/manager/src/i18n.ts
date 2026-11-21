@@ -52,7 +52,7 @@ const en = {
   earlyLimit: "Clock-in opens (min before shift)",
   noCoords: "Location not set: phone punches only work on the clinic Wi-Fi.",
   wifi: "Clinic Wi-Fi",
-  wifiHint: "Easiest from the app: Setup → Add current Wi-Fi, while connected at the clinic.",
+  wifiHint: "Easiest from the app, while connected at the clinic: Settings → \"Add the Wi-Fi I'm connected to\".",
   ssid: "Network name",
   bssid: "Access point (BSSID)",
   // Employees
@@ -144,11 +144,22 @@ const en = {
   noAddressResults: "Address not found. Try without the suite number, or save the position from the app while in the clinic.",
   addressSearchFailed: "The search didn't work. Try again in a moment.",
   pickAddress: "Choose the right address:",
-  mapCheckHint: "Check that the pin is on the building. For more precision, use the app inside the clinic: Setup → Save my position as the clinic's.",
+  mapCheckHint: "Check that the pin is on the building. For more precision, use the app inside the clinic: Settings → \"Save my location as the clinic's\".",
   addressPlaceholder: "123 Main Street, Gatineau, QC",
   // Positions and roles
   position: "Position",
   noPosition: "No position",
+  shiftPosition: "Position for this shift",
+  employeesPosition: "The employee's position",
+  anyPosition: "Any position",
+  duplicateName: "That name already exists. Choose another one.",
+  duplicateEmail: "Another employee already has this email.",
+  duplicateShift: "This shift already exists.",
+  networkError: "No connection to the server. Check the internet and try again.",
+  tooManyCodes: "A code was just sent. Wait a minute before asking for another one.",
+  alreadyMember: "This login already belongs to an organization. Sign out and back in.",
+  assignErrors: { overlap: "This person already works at that time.", not_assigned: "This person isn't assigned to this clinic.", not_open: "This shift was already assigned. Reload the page." } as Record<string, string>,
+  wrongCode: "Wrong or expired code. Use the code from the latest email, or ask for a new one.",
   positionsTitle: "Positions",
   positionsHint: "Job titles such as Podiatrist, Receptionist or Orthotist. They're shown on the schedule and don't change what a person can do.",
   positionFr: "Name (French)",
@@ -270,7 +281,8 @@ const en = {
   alsoAway: "Also away",
   pendingLower: "pending",
   paidHours: "Paid hours (payroll)",
-  paidHoursHint: "Hours to pay for this leave. Leave empty or 0 if unpaid. Suggested: 8 h per weekday.",
+  paidHoursHint: "Hours to pay for this leave. Leave empty or 0 if unpaid.",
+  useSuggestion: (h: string) => `Use the suggestion: ${h} h`,
   requestErrors: { not_allowed: "You can't decide this request.", not_pending: "Already handled." } as Record<string, string>,
   currentAvailability: "Now",
   requestedAvailability: "Requested",
@@ -358,7 +370,7 @@ const fr: typeof en = {
   earlyLimit: "Pointage ouvert (min avant le quart)",
   noCoords: "Position non définie : le pointage par téléphone fonctionne seulement sur le Wi-Fi de la clinique.",
   wifi: "Wi-Fi de la clinique",
-  wifiHint: "Plus simple depuis l'application : Réglages → Ajouter le Wi-Fi actuel, connecté à la clinique.",
+  wifiHint: "Plus simple depuis l'application, connecté à la clinique : Réglages → « Ajouter le Wi-Fi auquel je suis connecté ».",
   ssid: "Nom du réseau",
   bssid: "Point d'accès (BSSID)",
   addEmployee: "Ajouter un employé",
@@ -446,11 +458,22 @@ const fr: typeof en = {
   noAddressResults: "Adresse introuvable. Essayez sans le numéro de local, ou enregistrez la position depuis l'application sur place.",
   addressSearchFailed: "La recherche n'a pas fonctionné. Réessayez dans un moment.",
   pickAddress: "Choisissez la bonne adresse :",
-  mapCheckHint: "Vérifiez que le repère est sur l'immeuble. Pour plus de précision, utilisez l'application dans la clinique : Réglages → Enregistrer ma position comme celle de la clinique.",
+  mapCheckHint: "Vérifiez que le repère est sur l'immeuble. Pour plus de précision, utilisez l'application dans la clinique : Réglages → « Enregistrer ma position comme celle de la clinique ».",
   addressPlaceholder: "123, rue Principale, Gatineau, QC",
   // Postes et rôles
   position: "Poste",
   noPosition: "Aucun poste",
+  shiftPosition: "Poste pour ce quart",
+  employeesPosition: "Le poste de l'employé",
+  anyPosition: "N'importe quel poste",
+  duplicateName: "Ce nom existe déjà. Choisissez-en un autre.",
+  duplicateEmail: "Un autre employé a déjà ce courriel.",
+  duplicateShift: "Ce quart existe déjà.",
+  networkError: "Pas de connexion au serveur. Vérifiez Internet et réessayez.",
+  tooManyCodes: "Un code vient d'être envoyé. Attendez une minute avant d'en demander un autre.",
+  alreadyMember: "Cette connexion appartient déjà à une organisation. Déconnectez-vous puis reconnectez-vous.",
+  assignErrors: { overlap: "Cette personne travaille déjà à ce moment-là.", not_assigned: "Cette personne n'est pas affectée à cette clinique.", not_open: "Ce quart a déjà été attribué. Rechargez la page." },
+  wrongCode: "Code incorrect ou expiré. Utilisez le code du dernier courriel reçu, ou demandez-en un nouveau.",
   positionsTitle: "Postes",
   positionsHint: "Titres d'emploi comme Podiatre, Réceptionniste ou Orthésiste. Ils s'affichent dans l'horaire et ne changent pas ce que la personne peut faire.",
   positionFr: "Nom (français)",
@@ -572,7 +595,8 @@ const fr: typeof en = {
   alsoAway: "Aussi absents",
   pendingLower: "en attente",
   paidHours: "Heures payées (paie)",
-  paidHoursHint: "Heures à payer pour ce congé. Laissez vide ou 0 si non payé. Suggestion : 8 h par jour de semaine.",
+  paidHoursHint: "Heures à payer pour ce congé. Laissez vide ou 0 si non payé.",
+  useSuggestion: (h: string) => `Utiliser la suggestion : ${h} h`,
   requestErrors: { not_allowed: "Vous ne pouvez pas décider de cette demande.", not_pending: "Déjà traitée." } as Record<string, string>,
   currentAvailability: "Actuelles",
   requestedAvailability: "Demandées",
@@ -619,4 +643,17 @@ export function hours(minutes: number, lang: Lang): string {
 export function formatDate(date: string, lang: Lang, opts: Intl.DateTimeFormatOptions): string {
   const [y, m, d] = date.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString(lang === "fr" ? "fr-CA" : "en-CA", { timeZone: "UTC", ...opts });
+}
+
+/** Readable message for an error from the database or the network. */
+export function friendly(e: unknown, t: Strings): string {
+  const message = e instanceof Error ? e.message : String(e);
+  const code = (e as { code?: string } | null)?.code;
+  if (code === "23505" || /duplicate key/i.test(message)) {
+    if (/persons_account_email/.test(message)) return t.duplicateEmail;
+    if (/shifts_no_duplicate/.test(message)) return t.duplicateShift;
+    return t.duplicateName;
+  }
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) return t.networkError;
+  return message;
 }

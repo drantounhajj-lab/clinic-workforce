@@ -778,4 +778,36 @@ describe("timesheets, requests, open shifts, cross-company view, notifications",
     expect(await db.as(zoe, "select name from public.credentials")).toEqual([{ name: "Permis OPPQ" }]);
     expect(await db.as(luc, "select name from public.credentials")).toHaveLength(0);
   });
+
+  it("positions: one per name; exchanges, volunteering and 'ask the team' respect them", async () => {
+    await expect(db.as(julie, "insert into public.job_roles (name_fr, name_en) values (' réceptionniste ', 'Front desk')")).rejects.toThrow(/job_roles_account_name_key/);
+    const [pod] = await db.as<{ id: string }>(julie, "insert into public.job_roles (name_fr, name_en) values ('Podiatre', 'Podiatrist') returning id");
+    const [rec] = await db.as<{ id: string }>(julie, "select id from public.job_roles where name_fr = 'Réceptionniste'");
+    await db.as(tony, "update public.employments set job_role_id = $1 where id = $2", [rec.id, e.zoe]);
+    await db.as(tony, "update public.employments set job_role_id = $1 where id in ($2, $3)", [pod.id, e.yanQc, e.yanOn]);
+
+    // Open podiatrist shift: the receptionist can't volunteer and isn't asked
+    const [open] = await db.as<{ id: string }>(
+      julie,
+      "insert into public.shifts (location_id, week_start, employment_id, job_role_id, starts_at, ends_at) values ($1, $2, null, $3, $4, $5) returning id",
+      [ids.gat, week(), pod.id, at(5, 13), at(5, 17)],
+    );
+    expect(await db.rpc(zoe, "claim_open_shift", [open.id])).toMatchObject({ ok: false, reason: "wrong_position" });
+    expect(await db.rpc(yan, "claim_open_shift", [open.id])).toMatchObject({ ok: true });
+    await db.rpc(julie, "request_coverage", [open.id]);
+    const asked = await db.admin<{ person_id: string }>("select person_id from app.notifications where data ->> 'shift_id' = $1", [open.id]);
+    expect(asked.map((x) => x.person_id)).toContain(p.yan);
+    expect(asked.map((x) => x.person_id)).not.toContain(p.zoe);
+
+    // The receptionist's shift can't be given to the podiatrist
+    const [mine] = await db.as<{ id: string }>(
+      julie,
+      "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5) returning id",
+      [ids.gat, week(), e.zoe, at(4, 13), at(4, 17)],
+    );
+    const cands = await db.rpc<{ ok: boolean; colleagues: { person_id: string }[] }>(zoe, "swap_candidates", [mine.id]);
+    expect(cands.ok).toBe(true);
+    expect(cands.colleagues.map((c) => c.person_id)).not.toContain(p.yan);
+    expect(await db.rpc(zoe, "request_shift_swap", [mine.id, e.yanQc, null, null])).toMatchObject({ ok: false, reason: "wrong_position" });
+  });
 });

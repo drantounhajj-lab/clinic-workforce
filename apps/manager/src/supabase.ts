@@ -2,8 +2,9 @@ import { createClient } from "@supabase/supabase-js";
 
 // Public values: the project URL and the publishable key are meant to be shipped in apps.
 // Data is protected by row-level security on the server.
-export const SUPABASE_URL = "https://tmxnbqjlagsyoujppkpb.supabase.co";
-export const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_LCXXQ4bJc_tu0U6Xiq4Rrw_5BLjdmpJ";
+// VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY point the page at a local test backend (e2e/stack.mjs).
+export const SUPABASE_URL: string = import.meta.env.VITE_SUPABASE_URL ?? "https://tmxnbqjlagsyoujppkpb.supabase.co";
+export const SUPABASE_PUBLISHABLE_KEY: string = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "sb_publishable_LCXXQ4bJc_tu0U6Xiq4Rrw_5BLjdmpJ";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
@@ -134,8 +135,16 @@ export interface Punch {
 }
 
 /** Throws a readable error when a Supabase call fails. */
-export function must<T>(res: { data: T | null; error: { message: string } | null }): T {
-  if (res.error) throw new Error(res.error.message);
+export class DbError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export function must<T>(res: { data: T | null; error: { message: string; code?: string } | null }): T {
+  if (res.error) throw new DbError(res.error.message, res.error.code);
   return res.data as T;
 }
 

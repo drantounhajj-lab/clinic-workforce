@@ -1,6 +1,6 @@
 import { addDays, localDate, zonedToUtc } from "@clinic-workforce/rules";
 import { useEffect, useState } from "react";
-import { hours } from "../i18n";
+import { hours, friendly } from "../i18n";
 import { personName, useSession } from "../session";
 import { must, type Punch, supabase } from "../supabase";
 
@@ -31,7 +31,7 @@ export function Punches() {
           setAllPunches(must(res) as Punch[]);
           setError("");
         } catch (e) {
-          setError((e as Error).message);
+          setError(friendly(e, t));
         }
       });
   }, [location, date, tz]);

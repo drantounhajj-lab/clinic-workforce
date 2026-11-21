@@ -1,3 +1,4 @@
+import { friendly } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../session";
 import { type CoverageRule, must, supabase } from "../supabase";
@@ -12,7 +13,7 @@ export function CoverageRules({ locationId }: { locationId: string }) {
 
   const load = useCallback(async () => {
     const { data: rows, error: err } = await supabase.from("coverage_rules").select("*").eq("location_id", locationId).order("start_time");
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else setRules((rows as CoverageRule[]) ?? []);
   }, [locationId]);
   useEffect(() => {
@@ -34,13 +35,13 @@ export function CoverageRules({ locationId }: { locationId: string }) {
       must(await supabase.from("coverage_rules").insert({ ...form, location_id: locationId }));
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
   async function remove(id: string) {
     const { error: err } = await supabase.from("coverage_rules").delete().eq("id", id);
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else load();
   }
 
@@ -148,7 +149,7 @@ export function PaySettings({ companyId }: { companyId: string }) {
           type="button"
           onClick={async () => {
             const { error } = await supabase.from("companies").update({ pay_frequency: freq, pay_period_anchor: anchor }).eq("id", companyId);
-            setMsg(error ? error.message : t.saved);
+            setMsg(error ? friendly(error, t) : t.saved);
             if (!error) await reload();
           }}
         >

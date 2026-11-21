@@ -149,7 +149,8 @@ export type IssueCode =
   | "time_off"
   | "travel_time"
   | "coverage_gap"
-  | "credential_expiring";
+  | "credential_expiring"
+  | "position_mismatch";
 
 export interface Issue {
   code: IssueCode;
@@ -271,6 +272,18 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
         personId: e.personId,
         employmentId: e.id,
         details: { locationId: l.id, sameCompany: l.companyId === e.companyId },
+      });
+    }
+
+    // 2b. Shift for a position the employee doesn't hold (both known)
+    if (s.jobRoleId && e.jobRoleId && s.jobRoleId !== e.jobRoleId) {
+      issues.push({
+        code: "position_mismatch",
+        severity: "warning",
+        shiftIds: [s.id],
+        personId: e.personId,
+        employmentId: e.id,
+        details: { shiftJobRoleId: s.jobRoleId, employeeJobRoleId: e.jobRoleId },
       });
     }
 

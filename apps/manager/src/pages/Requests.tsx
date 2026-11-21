@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { formatDate } from "../i18n";
+import { formatDate, friendly, hours } from "../i18n";
 import { personName, useSession } from "../session";
 import { type AvailabilityRule, must, type PunchCorrection, supabase, type TimeOffRequest } from "../supabase";
 
@@ -37,7 +37,7 @@ export function Requests({ onChange }: { onChange?: () => void }) {
       setAvailability(must(av) as AvailabilityRule[]);
       setCorrections(must(cor) as PunchCorrection[]);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }, [locationsWith]);
 
@@ -63,15 +63,26 @@ export function Requests({ onChange }: { onChange?: () => void }) {
     return n;
   };
 
+  // Unpaid: 0. Part of a day: its hours. Full days: 8 h per weekday.
+  const suggestedHours = (r: TimeOffRequest) => {
+    if (r.type === "unpaid") return 0;
+    if (r.start_time && r.end_time) {
+      const [sh, sm] = r.start_time.split(":").map(Number);
+      const [eh, em] = r.end_time.split(":").map(Number);
+      return Math.max(0, Math.round(((eh * 60 + em - sh * 60 - sm) / 60) * 100) / 100);
+    }
+    return businessDays(r) * 8;
+  };
+
   async function decideTimeOff(r: TimeOffRequest, approve: boolean) {
-    const hours = paid[r.id] === undefined || paid[r.id] === "" ? null : Number(paid[r.id].replace(",", "."));
+    const paidHours = paid[r.id] === undefined || paid[r.id] === "" ? null : Number(paid[r.id].replace(",", "."));
     const { data: res, error: err } = await supabase.rpc("decide_time_off", {
       p_id: r.id,
       p_approve: approve,
-      p_paid_hours: approve ? hours : null,
+      p_paid_hours: approve ? paidHours : null,
       p_note: notes[r.id] ?? null,
     });
-    if (err || !res?.ok) say(r.id, false, err?.message ?? t.requestErrors[res?.reason] ?? t.error);
+    if (err || !res?.ok) say(r.id, false, err ? friendly(err, t) : t.requestErrors[res?.reason] ?? t.error);
     else {
       await load();
       onChange?.();
@@ -80,7 +91,7 @@ export function Requests({ onChange }: { onChange?: () => void }) {
 
   async function decideAvailability(personId: string, approve: boolean) {
     const { data: res, error: err } = await supabase.rpc("decide_availability", { p_person_id: personId, p_approve: approve });
-    if (err || !res?.ok) say(personId, false, err?.message ?? t.requestErrors[res?.reason] ?? t.error);
+    if (err || !res?.ok) say(personId, false, err ? friendly(err, t) : t.requestErrors[res?.reason] ?? t.error);
     else {
       await load();
       onChange?.();
@@ -89,7 +100,7 @@ export function Requests({ onChange }: { onChange?: () => void }) {
 
   async function decideCorrection(c: PunchCorrection, approve: boolean) {
     const { data: res, error: err } = await supabase.rpc("decide_punch_correction", { p_id: c.id, p_approve: approve, p_note: notes[c.id] ?? null });
-    if (err || !res?.ok) say(c.id, false, err?.message ?? t.requestErrors[res?.reason] ?? t.error);
+    if (err || !res?.ok) say(c.id, false, err ? friendly(err, t) : t.requestErrors[res?.reason] ?? t.error);
     else {
       await load();
       onChange?.();
@@ -146,10 +157,15 @@ export function Requests({ onChange }: { onChange?: () => void }) {
                   <input
                     id={`paid-${r.id}`}
                     inputMode="decimal"
-                    placeholder={r.type === "unpaid" ? "0" : String(businessDays(r) * 8)}
+                    placeholder="0"
                     value={paid[r.id] ?? ""}
                     onChange={(e) => setPaid({ ...paid, [r.id]: e.target.value })}
                   />
+                  {suggestedHours(r) > 0 && (paid[r.id] ?? "") !== String(suggestedHours(r)) && (
+                    <button type="button" className="link small" onClick={() => setPaid({ ...paid, [r.id]: String(suggestedHours(r)) })}>
+                      {t.useSuggestion(hours(suggestedHours(r) * 60, lang))}
+                    </button>
+                  )}
                 </label>
                 <label className="field" htmlFor={`n-${r.id}`}>
                   <span>{t.managerNote}</span>

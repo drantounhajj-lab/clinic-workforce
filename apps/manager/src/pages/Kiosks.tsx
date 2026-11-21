@@ -1,3 +1,4 @@
+import { friendly } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../session";
 import { type KioskDevice, must, supabase } from "../supabase";
@@ -16,7 +17,7 @@ export function Kiosks() {
     try {
       setDevices(must(await supabase.from("kiosk_devices").select("*").order("created_at")) as KioskDevice[]);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }, []);
 
@@ -33,7 +34,7 @@ export function Kiosks() {
       return;
     }
     const { data, error: err } = await supabase.rpc("kiosk_approve_pairing", { p_code: code, p_location_id: locationId, p_name: name.trim() || "iPad" });
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else if (!data?.ok) setError(t.pairErrors[data?.reason] ?? String(data?.reason));
     else {
       setNotice(t.paired);
@@ -47,7 +48,7 @@ export function Kiosks() {
       must(await supabase.from("kiosk_devices").delete().eq("id", id));
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 

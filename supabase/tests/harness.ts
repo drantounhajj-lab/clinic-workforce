@@ -67,6 +67,7 @@ export class TestDb {
       password: "postgres",
       port,
       persistent: false,
+      initdbFlags: ["--encoding=UTF8", "--locale=C"], // accents, as on Supabase
       onLog: () => {},
       onError: () => {},
     });

@@ -267,6 +267,16 @@ describe("validateSchedule: travel, time off, coverage, expiring credentials", (
     expect(codes(other)).toContain("coverage_gap");
   });
 
+  it("warns when a shift is for a position the employee doesn't hold", () => {
+    const emps: EmploymentInput[] = employments.map((e) => (e.id === "marie-qc" ? { ...e, jobRoleId: "reception" } : e));
+    const pod = { ...shift("marie-qc", "gatineau", 0, "09:00", "12:00", 0), jobRoleId: "podiatrist" };
+    const r = run([pod], { employments: emps });
+    expect(r.issues.find((i) => i.code === "position_mismatch")?.severity).toBe("warning");
+    expect(codes(run([{ ...pod, jobRoleId: "reception" }], { employments: emps }))).not.toContain("position_mismatch");
+    // Employee without a position: nothing to compare
+    expect(codes(run([pod]))).not.toContain("position_mismatch");
+  });
+
   it("warns once when a credential expires within 30 days", () => {
     const cred = { personId: "marie", name: "Permis OPPQ", expiresOn: addDays(WEEK, 10), blocksSchedulingWhenExpired: true };
     const r = run([shift("marie-qc", "gatineau", 0, "09:00", "12:00", 0), shift("marie-qc", "gatineau", 1, "09:00", "12:00", 0)], { credentials: [cred] });

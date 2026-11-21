@@ -41,7 +41,11 @@ export default function ScheduleScreen() {
       setSwaps((mine.data as MySwap[]) ?? []);
       setCalendarOn(prefs.calendar);
       const published = new Set(((weeks.data as { location_id: string; week_start: string }[]) ?? []).map((w) => `${w.location_id}|${w.week_start}`));
-      setOpenShifts(((open.data as (Shift & { week_start: string })[]) ?? []).filter((x) => published.has(`${x.location_id}|${x.week_start}`)));
+      // Only shifts this person could take: published, and for no particular position or one they hold there.
+      const fits = (x: Shift & { week_start: string }) =>
+        !x.job_role_id ||
+        employments.some((e) => e.employment_locations.some((l) => l.location_id === x.location_id) && (!e.job_role_id || e.job_role_id === x.job_role_id));
+      setOpenShifts(((open.data as (Shift & { week_start: string })[]) ?? []).filter((x) => published.has(`${x.location_id}|${x.week_start}`) && fits(x)));
       setMyClaims((claims.data as { shift_id: string; status: string }[]) ?? []);
     } catch (e) {
       setError((e as Error).message);

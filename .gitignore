@@ -7,3 +7,6 @@ dist/
 dist/
 supabase/.temp/
 supabase/.branches/
+e2e/.bin/
+e2e/out/
+__pycache__/

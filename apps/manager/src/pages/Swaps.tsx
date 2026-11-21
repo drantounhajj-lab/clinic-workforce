@@ -1,3 +1,4 @@
+import { friendly } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
 import { personName, useSession } from "../session";
 import { type Shift, type ShiftSwap, supabase } from "../supabase";
@@ -14,7 +15,7 @@ export function Swaps({ onChange }: { onChange?: () => void }) {
   const load = useCallback(async () => {
     const { data: rows, error: err } = await supabase.from("shift_swaps").select("*").order("created_at", { ascending: false }).limit(150);
     if (err) {
-      setError(err.message);
+      setError(friendly(err, t));
       return;
     }
     const list = (rows as ShiftSwap[]) ?? [];
@@ -51,7 +52,7 @@ export function Swaps({ onChange }: { onChange?: () => void }) {
     setBusy(s.id);
     const { data: res, error: err } = await supabase.rpc("decide_swap", { p_swap_id: s.id, p_approve: approve, p_note: notes[s.id] ?? null });
     setBusy(null);
-    if (err) setMessages((m) => ({ ...m, [s.id]: { ok: false, text: err.message } }));
+    if (err) setMessages((m) => ({ ...m, [s.id]: { ok: false, text: friendly(err, t) } }));
     else if (!res?.ok) setMessages((m) => ({ ...m, [s.id]: { ok: false, text: t.swapReasons[res?.reason] ?? String(res?.reason) } }));
     else {
       setMessages((m) => ({ ...m, [s.id]: { ok: true, text: t.saved } }));

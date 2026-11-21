@@ -1,6 +1,6 @@
 import { CredentialsPanel, ExpiringCredentials } from "./Credentials";
 import { useState } from "react";
-import type { Strings } from "../i18n";
+import { friendly, type Strings } from "../i18n";
 import { personName, useSession } from "../session";
 import { type Company, type CustomRole, type Employment, type JobRole, type Location, must, type Person, supabase } from "../supabase";
 
@@ -146,7 +146,7 @@ export function Employees() {
       await reload();
       setNotice(t.saved);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
       await reload();
     }
   }
@@ -189,7 +189,7 @@ export function Employees() {
       must(await supabase.from("persons").delete().eq("id", p.id));
       await reload();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { friendly } from "../i18n";
 import { useSession } from "../session";
 import { supabase } from "../supabase";
 
@@ -21,7 +22,7 @@ export function Login() {
     setError("");
     const { error: err } = await supabase.auth.signInWithOtp({ email: clean, options: { shouldCreateUser: true } });
     setBusy(false);
-    if (err) setError(err.message);
+    if (err) setError(err.status === 429 || /security purposes|rate limit/i.test(err.message) ? t.tooManyCodes : friendly(err, t));
     else {
       setEmail(clean);
       setStep("code");
@@ -38,7 +39,7 @@ export function Login() {
     setError("");
     const { error: err } = await supabase.auth.verifyOtp({ email, token: code.trim(), type: "email" });
     setBusy(false);
-    if (err) setError(err.message);
+    if (err) setError(err.status === 403 || /expired|invalid/i.test(err.message) ? t.wrongCode : friendly(err, t));
   }
 
   return (
@@ -99,8 +100,8 @@ export function CreateOrganization() {
     setError("");
     const { data, error: err } = await supabase.rpc("create_account", { p_account_name: org.trim(), p_first_name: first.trim(), p_last_name: last.trim() });
     setBusy(false);
-    if (err) setError(err.message);
-    else if (!data?.ok) setError(String(data?.reason ?? "error"));
+    if (err) setError(friendly(err, t));
+    else if (!data?.ok) setError(data?.reason === "already_member" ? t.alreadyMember : t.error);
     else await reload();
   }
 

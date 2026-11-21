@@ -180,6 +180,8 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
         return `${ctx.clinicName} : poste non couvert de ${d.from} à ${d.to}.`;
       case "credential_expiring":
         return `${who} : ${d.credential} expire le ${d.expiresOn}.`;
+      case "position_mismatch":
+        return `${who} : ce quart est pour un autre poste (${ctx.timeRange}).`;
     }
   }
   switch (issue.code) {
@@ -213,5 +215,7 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
       return `${ctx.clinicName}: position not covered from ${d.from} to ${d.to}.`;
     case "credential_expiring":
       return `${who}: ${d.credential} expires on ${d.expiresOn}.`;
+    case "position_mismatch":
+      return `${who}: this shift is for another position (${ctx.timeRange}).`;
   }
 }

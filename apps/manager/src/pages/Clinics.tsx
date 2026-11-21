@@ -1,7 +1,7 @@
 import { CoverageRules, PaySettings } from "./Coverage";
 import { useEffect, useState } from "react";
 import { useSession } from "../session";
-import type { Strings } from "../i18n";
+import { friendly, type Strings } from "../i18n";
 import { type Company, type Location, type LocationWifi, must, type Province, supabase } from "../supabase";
 
 const PROVINCES: Province[] = ["QC", "ON", "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "PE", "SK", "YT"];
@@ -55,7 +55,7 @@ export function Clinics() {
       await reload();
       setNotice(t.saved);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 

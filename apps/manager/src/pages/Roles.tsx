@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { friendly } from "../i18n";
 import { useSession } from "../session";
 import { type CustomRole, type JobRole, must, type Permission, PERMISSIONS, supabase } from "../supabase";
 
@@ -8,6 +9,8 @@ export function Roles() {
   const [notice, setNotice] = useState("");
   const [pos, setPos] = useState({ fr: "", en: "" });
   const [editingPos, setEditingPos] = useState<{ id: string; fr: string; en: string } | null>(null);
+  // Checkbox changes show right away, while saving
+  const [permDraft, setPermDraft] = useState<Record<string, Permission[]>>({});
   const adminCompanies = (data?.companies ?? []).filter((c) => managesCompany(c.id));
   const [newRole, setNewRole] = useState<{ company_id: string; name: string; permissions: Permission[] }>({
     company_id: adminCompanies[0]?.id ?? "",
@@ -24,7 +27,7 @@ export function Roles() {
       await reload();
       setNotice(t.saved);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
@@ -157,12 +160,19 @@ export function Roles() {
                         id={`perm-${r.id}-${p}`}
                         type="checkbox"
                         disabled={!editable}
-                        checked={r.permissions.includes(p)}
-                        onChange={(e) =>
+                        checked={(permDraft[r.id] ?? r.permissions).includes(p)}
+                        onChange={(e) => {
+                          const next = togglePerm(permDraft[r.id] ?? r.permissions, p, e.target.checked);
+                          setPermDraft((d) => ({ ...d, [r.id]: next }));
                           run(async () => {
-                            must(await supabase.from("custom_roles").update({ permissions: togglePerm(r.permissions, p, e.target.checked) }).eq("id", r.id));
-                          })
-                        }
+                            must(await supabase.from("custom_roles").update({ permissions: next }).eq("id", r.id));
+                          }).finally(() =>
+                            setPermDraft((d) => {
+                              const { [r.id]: _done, ...rest } = d;
+                              return rest;
+                            }),
+                          );
+                        }}
                       />
                       {t.perms[p]}
                     </label>

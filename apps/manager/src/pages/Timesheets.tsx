@@ -2,7 +2,7 @@ import { addDays, zonedToUtc } from "@clinic-workforce/rules";
 import { buildTimesheets, recentPayPeriods, type TimesheetRow, toHours } from "@clinic-workforce/timesheet";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { downloadBlob, exportTimesheetWorkbook } from "../excel";
-import { formatDate } from "../i18n";
+import { formatDate, friendly } from "../i18n";
 import { personName, useSession } from "../session";
 import { must, type Punch, type Shift, supabase, type TimeOffRequest, type TimesheetApproval } from "../supabase";
 
@@ -65,7 +65,7 @@ export function Timesheets() {
         setTimeOff(must(off) as TimeOffRequest[]);
       } else setTimeOff([]);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period?.start, companyId, data]);
@@ -145,7 +145,7 @@ export function Timesheets() {
       }
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     }
   }
 
@@ -178,7 +178,7 @@ export function Timesheets() {
       const scope = companyId === ALL ? "toutes" : companyName(companyId).replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "");
       downloadBlob(blob, `${t.timesheetFile}-${scope}-${period!.start}_${lastDay}.xlsx`);
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendly(e, t));
     } finally {
       setBusy(false);
     }
@@ -193,7 +193,7 @@ export function Timesheets() {
       p_occurred_at: zonedToUtc(adding.date, adding.time, timezoneOf(adding.locationId)).toISOString(),
       p_note: adding.note,
     });
-    if (err) setError(err.message);
+    if (err) setError(friendly(err, t));
     else if (!res?.ok) setError(t.punchErrors[res?.reason] ?? String(res?.reason));
     else {
       setAdding(null);

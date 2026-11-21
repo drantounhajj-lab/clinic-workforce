@@ -15,6 +15,8 @@ export function Login() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const netText = (message: string) => (/network|fetch/i.test(message) ? t.networkError : message);
+
   async function sendCode() {
     const clean = email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
@@ -25,7 +27,7 @@ export function Login() {
     setError("");
     const { error: err } = await supabase.auth.signInWithOtp({ email: clean, options: { shouldCreateUser: true } });
     setBusy(false);
-    if (err) setError(err.message);
+    if (err) setError(err.status === 429 || /security purposes|rate limit/i.test(err.message) ? t.tooManyCodes : netText(err.message));
     else {
       setEmail(clean);
       setStep("code");
@@ -41,7 +43,7 @@ export function Login() {
     setError("");
     const { error: err } = await supabase.auth.verifyOtp({ email, token: code, type: "email" });
     setBusy(false);
-    if (err) setError(err.message);
+    if (err) setError(err.status === 403 || /expired|invalid/i.test(err.message) ? t.wrongCode : netText(err.message));
   }
 
   // Accounts created with a password in the Supabase dashboard (e.g. for Apple's App Review team).
@@ -63,7 +65,7 @@ export function Login() {
     setError("");
     const { error: err } = await supabase.auth.signInAnonymously();
     setBusy(false);
-    if (err) setError(err.message);
+    if (err) setError(netText(err.message));
   }
 
   return (
