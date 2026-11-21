@@ -496,3 +496,92 @@ describe("punch-only staff, shift exchanges and custom roles", () => {
     ).rejects.toThrow(/row-level security/);
   });
 });
+
+describe("review fixes: acknowledgements, changed shifts, duplicates", () => {
+  let ana: TestUser;
+  let ben: TestUser;
+  const e: Record<string, string> = {};
+  const week = () => {
+    const d = new Date(`${thisMonday()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 14);
+    return d.toISOString().slice(0, 10);
+  };
+  const at = (day: number, hour: number) => {
+    const d = new Date(`${week()}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + day);
+    d.setUTCHours(hour);
+    return d.toISOString();
+  };
+  const shift = async (emp: string, day: number, from: number, to: number) =>
+    (
+      await db.as<{ id: string }>(
+        julie,
+        "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5) returning id",
+        [ids.gat, week(), emp, at(day, from), at(day, to)],
+      )
+    )[0].id;
+  const row = async (id: string) =>
+    (await db.admin<{ response: string; employment_id: string }>("select response, employment_id from public.shifts where id = $1", [id]))[0];
+
+  beforeAll(async () => {
+    ana = { ...(await db.admin<{ user_id: string }>("select user_id from public.persons where email = 'ana@example.com'").then((r) => ({ id: r[0].user_id }))), email: "ana@example.com", method: "otp" };
+    ben = { ...(await db.admin<{ user_id: string }>("select user_id from public.persons where email = 'ben@example.com'").then((r) => ({ id: r[0].user_id }))), email: "ben@example.com", method: "otp" };
+    for (const who of ["ana", "ben"]) {
+      const [x] = await db.admin<{ id: string }>(
+        "select e.id from public.employments e join public.persons p on p.id = e.person_id where p.email = $1",
+        [`${who}@example.com`],
+      );
+      e[who] = x.id;
+    }
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.gat, week()]);
+  });
+
+  it("a reassigned or moved shift must be acknowledged again", async () => {
+    const id = await shift(e.ana, 0, 13, 17);
+    await db.rpc(ana, "respond_to_shift", [id, "confirmed"]);
+    expect((await row(id)).response).toBe("confirmed");
+    await db.as(julie, "update public.shifts set employment_id = $2 where id = $1", [id, e.ben]);
+    expect(await row(id)).toMatchObject({ response: "pending", employment_id: e.ben });
+
+    await db.rpc(ben, "respond_to_shift", [id, "confirmed"]);
+    await db.as(julie, "update public.shifts set ends_at = ends_at + interval '1 hour' where id = $1", [id]);
+    expect((await row(id)).response).toBe("pending");
+
+    // A note or break change doesn't need a new acknowledgement
+    await db.rpc(ben, "respond_to_shift", [id, "confirmed"]);
+    await db.as(julie, "update public.shifts set unpaid_break_minutes = 30 where id = $1", [id]);
+    expect((await row(id)).response).toBe("confirmed");
+  });
+
+  it("changing a shift cancels open exchange requests, so nobody is approved for other hours", async () => {
+    const id = await shift(e.ana, 1, 13, 17);
+    const r = await db.rpc<{ id: string }>(ana, "request_shift_swap", [id, e.ben, null, null]);
+    await db.rpc(ben, "respond_to_swap", [r.id, true]);
+    await db.as(julie, "update public.shifts set starts_at = $2, ends_at = $3 where id = $1", [id, at(1, 18), at(1, 22)]);
+    expect(await db.rpc(julie, "decide_swap", [r.id, true, null])).toMatchObject({ ok: false, reason: "not_pending" });
+    expect((await row(id)).employment_id).toBe(e.ana);
+    const [swap] = await db.admin<{ status: string }>("select status from public.shift_swaps where id = $1", [r.id]);
+    expect(swap.status).toBe("cancelled");
+  });
+
+  it("an approved exchange leaves both shifts confirmed", async () => {
+    const a = await shift(e.ana, 2, 13, 17);
+    const b = await shift(e.ben, 3, 13, 17);
+    const r = await db.rpc<{ id: string }>(ana, "request_shift_swap", [a, e.ben, b, null]);
+    await db.rpc(ben, "respond_to_swap", [r.id, true]);
+    expect(await db.rpc(julie, "decide_swap", [r.id, true, null])).toMatchObject({ ok: true });
+    expect(await row(a)).toMatchObject({ employment_id: e.ben, response: "confirmed" });
+    expect(await row(b)).toMatchObject({ employment_id: e.ana, response: "confirmed" });
+    // ...and a later manager change still resets it
+    await db.as(julie, "update public.shifts set starts_at = starts_at + interval '30 minutes' where id = $1", [a]);
+    expect((await row(a)).response).toBe("pending");
+  });
+
+  it("refuses the same shift twice for the same employee, but allows repeated open shifts", async () => {
+    await shift(e.ana, 4, 9, 12);
+    await expect(shift(e.ana, 4, 9, 12)).rejects.toThrow(/shifts_no_duplicate/);
+    const open = "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, null, $3, $4)";
+    await db.as(julie, open, [ids.gat, week(), at(4, 9), at(4, 12)]);
+    await db.as(julie, open, [ids.gat, week(), at(4, 9), at(4, 12)]);
+  });
+});

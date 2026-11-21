@@ -191,6 +191,7 @@ export function Schedule() {
           starts_at: new Date(Date.parse(s.starts_at) + 7 * 86400000).toISOString(),
           ends_at: new Date(Date.parse(s.ends_at) + 7 * 86400000).toISOString(),
           unpaid_break_minutes: s.unpaid_break_minutes,
+          job_role_id: s.job_role_id,
           notes: s.notes,
         }))
         // Keep local clock times across daylight-saving changes
@@ -199,8 +200,24 @@ export function Schedule() {
           const date = addDays(localDate(new Date(s.starts_at), tz), 7);
           return { ...r, starts_at: zonedToUtc(date, hhmm(s.starts_at, tz), tz).toISOString(), ends_at: zonedToUtc(date, hhmm(s.ends_at, tz), tz).toISOString() };
         })
-        .filter((r) => !weekShifts.some((x) => x.employment_id === r.employment_id && x.starts_at === r.starts_at && x.ends_at === r.ends_at));
-      if (rowsToInsert.length) must(await supabase.from("shifts").insert(rowsToInsert));
+        // Compare instants, not strings ("14:00:00+00:00" and "14:00:00.000Z" are the same time)
+        .filter(
+          (r) =>
+            !weekShifts.some(
+              (x) =>
+                x.employment_id === r.employment_id &&
+                Date.parse(x.starts_at) === Date.parse(r.starts_at) &&
+                Date.parse(x.ends_at) === Date.parse(r.ends_at),
+            ),
+        );
+      // The database also refuses duplicates (shifts_no_duplicate); skip any that slip through.
+      if (rowsToInsert.length) {
+        must(
+          await supabase
+            .from("shifts")
+            .upsert(rowsToInsert, { onConflict: "employment_id,location_id,starts_at,ends_at", ignoreDuplicates: true }),
+        );
+      }
       setToast(t.copied(rowsToInsert.length));
       await load();
     } catch (e) {

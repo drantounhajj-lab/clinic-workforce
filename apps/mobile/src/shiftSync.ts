@@ -64,6 +64,9 @@ export async function fetchUpcomingShifts(employments: Employment[]): Promise<Sh
     supabase.from("shifts").select("*").in("employment_id", empIds).gt("ends_at", new Date().toISOString()).lt("starts_at", until).order("starts_at"),
     supabase.from("schedule_weeks").select("location_id, week_start").eq("status", "published").in("location_id", locIds),
   ]);
+  // Never act on a failed request: an empty list would delete events and cancel reminders.
+  if (shifts.error) throw new Error(shifts.error.message);
+  if (weeks.error) throw new Error(weeks.error.message);
   // Managers can read draft weeks too: keep only published ones.
   const published = new Set(((weeks.data as { location_id: string; week_start: string }[]) ?? []).map((w) => `${w.location_id}|${w.week_start}`));
   return ((shifts.data as (Shift & { week_start: string })[]) ?? []).filter((s) => published.has(`${s.location_id}|${s.week_start}`));
@@ -239,6 +242,8 @@ export function syncShifts(opts: { employments: Employment[]; locations: Locatio
         await cancelReminders();
         return [];
       }
+      // No employment loaded (e.g. the profile didn't load): leave the phone as it is.
+      if (opts.employments.length === 0) return [{ ok: false, reason: "error", message: "no_employments" }];
       const shifts = await fetchUpcomingShifts(opts.employments);
       const out: SyncOutcome[] = [];
       if (prefs.calendar) out.push(await syncCalendar(shifts, opts.locations, opts.t));
