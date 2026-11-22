@@ -553,7 +553,7 @@ describe("review fixes: acknowledgements, changed shifts, duplicates", () => {
     expect((await row(id)).response).toBe("confirmed");
   });
 
-  it("changing a shift cancels open exchange requests, so nobody is approved for other hours", async () => {
+  it("changing a shift sends an agreed exchange back to the colleague, so nobody is approved for other hours", async () => {
     const id = await shift(e.ana, 1, 13, 17);
     const r = await db.rpc<{ id: string }>(ana, "request_shift_swap", [id, e.ben, null, null]);
     await db.rpc(ben, "respond_to_swap", [r.id, true]);
@@ -561,7 +561,7 @@ describe("review fixes: acknowledgements, changed shifts, duplicates", () => {
     expect(await db.rpc(julie, "decide_swap", [r.id, true, null])).toMatchObject({ ok: false, reason: "not_pending" });
     expect((await row(id)).employment_id).toBe(e.ana);
     const [swap] = await db.admin<{ status: string }>("select status from public.shift_swaps where id = $1", [r.id]);
-    expect(swap.status).toBe("cancelled");
+    expect(swap.status).toBe("pending_colleague");
   });
 
   it("an approved exchange leaves both shifts confirmed", async () => {
@@ -809,5 +809,185 @@ describe("timesheets, requests, open shifts, cross-company view, notifications",
     expect(cands.ok).toBe(true);
     expect(cands.colleagues.map((c) => c.person_id)).not.toContain(p.yan);
     expect(await db.rpc(zoe, "request_shift_swap", [mine.id, e.yanQc, null, null])).toMatchObject({ ok: false, reason: "wrong_position" });
+  });
+});
+
+describe("phase 1: changed shifts, copy week, cross-company privacy", () => {
+  let gina: TestUser; // employee, Gatineau
+  let hugo: TestUser; // employee, Gatineau
+  let olivia: TestUser; // clinic manager, Ottawa only
+  const e: Record<string, string> = {};
+  const p: Record<string, string> = {};
+  const weekN = (n: number) => {
+    const d = new Date(`${thisMonday()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 7 * n);
+    return d.toISOString().slice(0, 10);
+  };
+  const W1 = () => weekN(6);
+  const at = (day: number, hour: number, week = W1()) => {
+    const d = new Date(`${week}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + day);
+    d.setUTCHours(hour);
+    return d.toISOString();
+  };
+  const add = async (emp: string | null, day: number, from: number, to: number, week = W1(), loc = ids.gat) =>
+    (
+      await db.as<{ id: string }>(
+        loc === ids.gat ? julie : tony,
+        "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, $2, $3, $4, $5) returning id",
+        [loc, week, emp, at(day, from, week), at(day, to, week)],
+      )
+    )[0].id;
+  const swap = async (id: string) => (await db.admin<{ status: string; colleague_responded_at: string | null }>("select status, colleague_responded_at from public.shift_swaps where id = $1", [id]))[0];
+  const row = async (id: string) => (await db.admin<{ employment_id: string; response: string }>("select employment_id, response from public.shifts where id = $1", [id]))[0];
+  const notes = (swapId: string) => db.admin<{ person_id: string; title: string; body: string }>("select person_id, title, body from app.notifications where data ->> 'swap_id' = $1 order by created_at", [swapId]);
+
+  beforeAll(async () => {
+    const people = await db.as<{ id: string; email: string }>(
+      tony,
+      `insert into public.persons (first_name, last_name, email) values
+         ('Gina', 'Roy', 'gina@example.com'), ('Hugo', 'Roy', 'hugo@example.com'),
+         ('Olivia', 'Chen', 'olivia@example.com'), ('Paul', 'Roy', 'paul.r@example.com')
+       returning id, email`,
+    );
+    for (const x of people) p[x.email.split("@")[0].replace(".r", "")] = x.id;
+    const hire = async (who: string, company: string, loc: string, extra = "") =>
+      (
+        await db.as<{ id: string }>(
+          tony,
+          `insert into public.employments (person_id, company_id${extra ? ", hourly_rate_cents" : ""}) values ($1, $2${extra ? ", 3150" : ""}) returning id`,
+          [p[who], company],
+        )
+      )[0].id;
+    e.gina = await hire("gina", ids.coQc, ids.gat);
+    e.hugo = await hire("hugo", ids.coQc, ids.gat);
+    e.paulQc = await hire("paul", ids.coQc, ids.gat, "rate");
+    e.paulOn = await hire("paul", ids.coOn, ids.ott);
+    for (const [emp, loc] of [[e.gina, ids.gat], [e.hugo, ids.gat], [e.paulQc, ids.gat], [e.paulOn, ids.ott]]) {
+      await db.as(tony, "insert into public.employment_locations (employment_id, location_id) values ($1, $2)", [emp, loc]);
+    }
+    await db.as(tony, "insert into public.role_assignments (person_id, role, location_id) values ($1, 'clinic_manager', $2)", [p.olivia, ids.ott]);
+    gina = await db.createUser("gina@example.com");
+    hugo = await db.createUser("hugo@example.com");
+    olivia = await db.createUser("olivia@example.com");
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.gat, W1()]);
+  });
+
+  it("exchange agreed, then the offered shift's hours change: back to the colleague, who is told", async () => {
+    const a = await add(e.gina, 0, 13, 17);
+    const r = await db.rpc<{ ok: boolean; id: string }>(gina, "request_shift_swap", [a, e.hugo, null, null]);
+    expect(await db.rpc(hugo, "respond_to_swap", [r.id, true])).toMatchObject({ ok: true });
+    expect((await swap(r.id)).status).toBe("pending_manager");
+
+    await db.as(julie, "update public.shifts set ends_at = $2 where id = $1", [a, at(0, 19)]);
+    expect(await swap(r.id)).toMatchObject({ status: "pending_colleague", colleague_responded_at: null });
+    expect(await db.rpc(julie, "decide_swap", [r.id, true, null])).toMatchObject({ ok: false, reason: "not_pending" });
+    const [newWhen] = await db.admin<{ w: string }>("select app.fmt_when(starts_at, ends_at, 'America/Toronto', 'fr-CA') as w from public.shifts where id = $1", [a]);
+    const told = (await notes(r.id)).filter((n) => n.title === "Échange à reconfirmer");
+    expect(told).toHaveLength(1);
+    expect(told[0].person_id).toBe(p.hugo);
+    expect(told[0].body).toContain(newWhen.w); // the new hours, not the old ones
+
+    expect(await db.rpc(hugo, "respond_to_swap", [r.id, true])).toMatchObject({ ok: true });
+    expect(await db.rpc(julie, "decide_swap", [r.id, true, null])).toMatchObject({ ok: true });
+    expect(await row(a)).toMatchObject({ employment_id: e.hugo, response: "confirmed" });
+  });
+
+  it("the shift asked in return changes, or the offered shift goes to someone else: cancelled, both told", async () => {
+    const a = await add(e.gina, 1, 13, 17);
+    const b = await add(e.hugo, 2, 13, 17);
+    const r = await db.rpc<{ id: string }>(gina, "request_shift_swap", [a, e.hugo, b, null]);
+    await db.rpc(hugo, "respond_to_swap", [r.id, true]);
+    await db.as(julie, "update public.shifts set starts_at = $2 where id = $1", [b, at(2, 14)]);
+    expect((await swap(r.id)).status).toBe("cancelled");
+    expect((await notes(r.id)).filter((n) => n.title === "Échange annulé").map((n) => n.person_id).sort()).toEqual([p.gina, p.hugo].sort());
+
+    const c = await add(e.gina, 3, 13, 17);
+    const r2 = await db.rpc<{ id: string }>(gina, "request_shift_swap", [c, e.hugo, null, null]);
+    await db.as(julie, "update public.shifts set employment_id = $2 where id = $1", [c, e.paulQc]);
+    expect((await swap(r2.id)).status).toBe("cancelled");
+    // The requester cancelling her own request: only the colleague is told
+    const d = await add(e.gina, 4, 13, 17);
+    const r3 = await db.rpc<{ id: string }>(gina, "request_shift_swap", [d, e.hugo, null, null]);
+    await db.rpc(gina, "cancel_swap", [r3.id]);
+    expect((await notes(r3.id)).filter((n) => n.title === "Échange annulé").map((n) => n.person_id)).toEqual([p.hugo]);
+  });
+
+  it("copy week: twice, or two managers at once, gives the same result as once; identical open shifts are kept", async () => {
+    const from = weekN(9);
+    const to = weekN(10);
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start) values ($1, $2)", [ids.gat, from]);
+    await add(e.gina, 0, 13, 21, from);
+    await add(null, 1, 13, 17, from);
+    await add(null, 1, 13, 17, from); // two identical open shifts on purpose
+    await add(e.hugo, 4, 23, 30, from); // overnight
+    const count = async () => Number((await db.admin<{ n: string }>("select count(*) as n from public.shifts where location_id = $1 and week_start = $2", [ids.gat, to]))[0].n);
+
+    expect(await db.rpc(gina, "copy_week", [ids.gat, from, to])).toMatchObject({ ok: false, reason: "not_allowed" });
+    expect(await db.rpc(olivia, "copy_week", [ids.gat, from, to])).toMatchObject({ ok: false, reason: "not_allowed" });
+
+    expect(await db.rpc(julie, "copy_week", [ids.gat, from, to])).toMatchObject({ ok: true, copied: 4, source: 4 });
+    expect(await db.rpc(julie, "copy_week", [ids.gat, from, to])).toMatchObject({ ok: true, copied: 0 });
+    expect(await count()).toBe(4);
+
+    await db.admin("delete from public.shifts where location_id = $1 and week_start = $2", [ids.gat, to]);
+    const both = await Promise.all([db.rpcConcurrent<{ copied: number }>(julie, "copy_week", [ids.gat, from, to]), db.rpcConcurrent<{ copied: number }>(tony, "copy_week", [ids.gat, from, to])]);
+    expect(both.map((x) => x.copied).sort()).toEqual([0, 4]);
+    expect(await count()).toBe(4);
+    const open = await db.admin<{ n: string }>("select count(*) as n from public.shifts where location_id = $1 and week_start = $2 and employment_id is null", [ids.gat, to]);
+    expect(Number(open[0].n)).toBe(2);
+  });
+
+  it("copy week keeps local clock times across a daylight-saving change, overnight shifts included", async () => {
+    // Daylight saving starts Sunday 2027-03-14 in Gatineau
+    await db.as(julie, "insert into public.schedule_weeks (location_id, week_start) values ($1, '2027-03-08')", [ids.gat]);
+    const ins = "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at) values ($1, '2027-03-08', $2, $3, $4)";
+    await db.as(julie, ins, [ids.gat, e.gina, "2027-03-08 09:00-05", "2027-03-08 17:00-05"]);
+    await db.as(julie, ins, [ids.gat, e.hugo, "2027-03-12 22:00-05", "2027-03-13 06:00-05"]);
+    expect(await db.rpc(julie, "copy_week", [ids.gat, "2027-03-08", "2027-03-15"])).toMatchObject({ ok: true, copied: 2 });
+    const rows = await db.admin<{ s: string; e: string }>(
+      "select to_char(starts_at at time zone 'America/Toronto', 'YYYY-MM-DD HH24:MI') as s, to_char(ends_at at time zone 'America/Toronto', 'YYYY-MM-DD HH24:MI') as e from public.shifts where week_start = '2027-03-15' order by starts_at",
+    );
+    expect(rows).toEqual([
+      { s: "2027-03-15 09:00", e: "2027-03-15 17:00" },
+      { s: "2027-03-19 22:00", e: "2027-03-20 06:00" },
+    ]);
+  });
+
+  it("an Ottawa manager sees that someone is busy in Gatineau, but nothing private about that job", async () => {
+    await db.as(julie, "update public.employments set job_role_id = (select id from public.job_roles where name_fr = 'Réceptionniste') where id = $1", [e.paulQc]);
+    const g = await add(e.paulQc, 0, 13, 21);
+    await db.as(julie, "update public.shifts set notes = 'Formation confidentielle' where id = $1", [g]);
+    // No direct access to the Gatineau shift or employment (pay, position)
+    expect(await db.as(olivia, "select id from public.shifts where id = $1", [g])).toHaveLength(0);
+    expect(await db.as(olivia, "select hourly_rate_cents from public.employments where id = $1", [e.paulQc])).toHaveLength(0);
+    // ...but the conflict is visible
+    const busy = await db.rpc<{ shifts: Record<string, unknown>[]; employments: Record<string, unknown>[] }>(olivia, "busy_shifts", [[p.paul], at(0, 0), at(7, 0)]);
+    const there = busy.shifts.find((x) => x.id === g)!;
+    expect(there).toMatchObject({ location_id: ids.gat, starts_at: expect.any(String), ends_at: expect.any(String) });
+    expect(Object.keys(there)).not.toContain("notes");
+    expect(Object.keys(there)).not.toContain("job_role_id");
+    for (const emp of busy.employments) {
+      expect(Object.keys(emp).sort()).toEqual(["company_id", "id", "location_ids", "person_id"]);
+    }
+    // She schedules Paul in Ottawa at the same time: the schedule checks flag the overlap as an error
+    const { validateSchedule } = await import("../../packages/rules/src/index");
+    const mine = { id: "new", employmentId: e.paulOn, locationId: ids.ott, startsAt: new Date(at(0, 15)), endsAt: new Date(at(0, 19)), unpaidBreakMinutes: 0 };
+    const result = validateSchedule({
+      locations: [
+        { id: ids.gat, companyId: ids.coQc, province: "QC", timezone: "America/Toronto" },
+        { id: ids.ott, companyId: ids.coOn, province: "ON", timezone: "America/Toronto" },
+      ],
+      employments: busy.employments.map((x) => ({ id: x.id as string, personId: x.person_id as string, companyId: x.company_id as string, locationIds: x.location_ids as string[] })),
+      shifts: [
+        mine,
+        ...busy.shifts.map((x) => ({ id: x.id as string, employmentId: x.employment_id as string, locationId: x.location_id as string, startsAt: new Date(x.starts_at as string), endsAt: new Date(x.ends_at as string), unpaidBreakMinutes: x.unpaid_break_minutes as number })),
+      ],
+      weeks: [W1()],
+      now: new Date(),
+    });
+    const overlap = result.issues.find((i) => i.code === "shift_overlap");
+    expect(overlap?.severity).toBe("error");
+    expect(overlap?.shiftIds.sort()).toEqual(["new", g].sort());
   });
 });

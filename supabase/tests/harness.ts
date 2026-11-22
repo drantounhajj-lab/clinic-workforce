@@ -53,10 +53,12 @@ export interface TestUser {
 export class TestDb {
   private pgServer: EmbeddedPostgres;
   client: pg.Client;
+  private port: number;
 
-  private constructor(server: EmbeddedPostgres, client: pg.Client) {
+  private constructor(server: EmbeddedPostgres, client: pg.Client, port: number) {
     this.pgServer = server;
     this.client = client;
+    this.port = port;
   }
 
   static async start(port = 54000 + Math.floor(Math.random() * 1000)): Promise<TestDb> {
@@ -80,7 +82,7 @@ export class TestDb {
     for (const file of readdirSync(dirPath).filter((f) => f.endsWith(".sql")).sort()) {
       await client.query(readFileSync(join(dirPath, file), "utf8"));
     }
-    return new TestDb(server, client);
+    return new TestDb(server, client, port);
   }
 
   async stop() {
@@ -127,6 +129,27 @@ export class TestDb {
     const placeholders = args.map((_, i) => `$${i + 1}`).join(", ");
     const rows = await this.as<{ result: T }>(user, `select public.${fn}(${placeholders}) as result`, args);
     return rows[0].result;
+  }
+
+  /**
+   * Call a function as a user on its own connection, so several calls can run at the same moment
+   * (two managers clicking at once, two employees accepting at once).
+   */
+  async rpcConcurrent<T = Record<string, unknown>>(user: TestUser, fn: string, args: unknown[] = []): Promise<T> {
+    const c = new pg.Client({ host: "localhost", port: this.port, user: "postgres", password: "postgres", database: "postgres" });
+    await c.connect();
+    try {
+      await c.query("begin");
+      await c.query("set local role authenticated");
+      const amr = [{ method: user.method ?? "otp", timestamp: 1 }];
+      await c.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: user.id, email: user.email, role: "authenticated", amr })]);
+      const placeholders = args.map((_, i) => `$${i + 1}`).join(", ");
+      const { rows } = await c.query(`select public.${fn}(${placeholders}) as result`, args);
+      await c.query("commit");
+      return rows[0].result as T;
+    } finally {
+      await c.end();
+    }
   }
 
   /** Run as the database owner (bypasses row-level security), e.g. to move the clock in tests. */

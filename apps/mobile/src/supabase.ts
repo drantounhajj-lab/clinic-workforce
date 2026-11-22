@@ -80,6 +80,8 @@ export interface MySwap {
   incoming: boolean;
   note: string | null;
   manager_note: string | null;
+  /** Times the offered shift changed after the colleague's answer (they must accept again). */
+  reset_count?: number;
   created_at: string;
   requester_name: string;
   target_name: string;

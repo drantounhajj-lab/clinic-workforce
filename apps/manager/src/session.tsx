@@ -2,6 +2,7 @@ import type { Session } from "@supabase/supabase-js";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { type Lang, strings, type Strings } from "./i18n";
 import {
+  type Account,
   type Company,
   type CustomRole,
   type CustomRoleAssignment,
@@ -16,6 +17,7 @@ import {
 } from "./supabase";
 
 export interface AccountData {
+  account: Account;
   me: Person;
   myRoles: RoleAssignment[];
   companies: Company[];
@@ -94,7 +96,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     setNoAccount(false);
-    const [companies, locations, persons, roles, employments, jobRoles, customRoles, customAssignments] = await Promise.all([
+    const [account, companies, locations, persons, roles, employments, jobRoles, customRoles, customAssignments] = await Promise.all([
+      supabase.from("accounts").select("*").eq("id", me.account_id).single(),
       supabase.from("companies").select("*").order("legal_name"),
       supabase.from("locations").select("*").order("name"),
       supabase.from("persons").select("*").order("last_name"),
@@ -106,6 +109,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     ]);
     const allRoles = must(roles) as RoleAssignment[];
     setData({
+      account: must(account) as Account,
       me,
       myRoles: allRoles.filter((r) => r.person_id === me.id),
       companies: must(companies) as Company[],

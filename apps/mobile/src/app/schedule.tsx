@@ -158,6 +158,7 @@ export default function ScheduleScreen() {
             <View key={w.id} style={styles.request}>
               <Text style={styles.requestTitle}>{w.target_shift ? t.wantsToExchange(w.requester_name) : t.wantsToGive(w.requester_name)}</Text>
               <Text style={styles.body}>{when(w.shift)}</Text>
+              {(w.reset_count ?? 0) > 0 && <Muted small>{t.swapHoursChanged}</Muted>}
               {w.target_shift && (
                 <Text style={styles.small}>
                   {t.inExchange} {when(w.target_shift)}

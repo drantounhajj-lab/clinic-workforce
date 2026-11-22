@@ -99,6 +99,25 @@ export function Clinics() {
       <section className="card stack">
         <h2>{t.companies}</h2>
         <p className="muted">{t.companyHint}</p>
+        {data.companies.length > 1 && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={data.account.combine_related_company_hours}
+              disabled={!isOwner}
+              onChange={(e) =>
+                run(async () => {
+                  must(await supabase.from("accounts").update({ combine_related_company_hours: e.target.checked }).eq("id", data.account.id));
+                })
+              }
+            />
+            <span>
+              {t.combineHours}
+              <br />
+              <span className="muted small">{t.combineHoursHint}</span>
+            </span>
+          </label>
+        )}
         {data.companies.length === 0 ? (
           <p className="muted">{t.none}</p>
         ) : (

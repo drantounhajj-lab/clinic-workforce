@@ -14,6 +14,13 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
 
 export type Province = "AB" | "BC" | "MB" | "NB" | "NL" | "NS" | "NT" | "NU" | "ON" | "PE" | "QC" | "SK" | "YT";
 
+export interface Account {
+  id: string;
+  name: string;
+  /** Overtime and weekly limits count hours across all of this account's companies. */
+  combine_related_company_hours: boolean;
+}
+
 export interface Company {
   id: string;
   account_id: string;
@@ -267,7 +274,8 @@ export interface ShiftClaim {
 
 /** Shifts of the people I schedule at clinics I can't see (other companies), from busy_shifts(). */
 export interface BusyShifts {
-  employments: { id: string; person_id: string; company_id: string; job_role_id: string | null; location_ids: string[] }[];
+  /** Other employers' records: employer and clinics only (pay and position stay private). */
+  employments: { id: string; person_id: string; company_id: string; location_ids: string[] }[];
   shifts: {
     id: string;
     employment_id: string;
@@ -276,7 +284,6 @@ export interface BusyShifts {
     starts_at: string;
     ends_at: string;
     unpaid_break_minutes: number;
-    job_role_id: string | null;
     published: boolean;
   }[];
 }

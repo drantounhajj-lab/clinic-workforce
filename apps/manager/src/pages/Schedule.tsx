@@ -140,7 +140,7 @@ export function Schedule() {
     const merged = new Map<string, Shift>(shifts.map((s) => [s.id, s]));
     for (const b of busy.shifts) {
       if (!merged.has(b.id)) {
-        merged.set(b.id, { ...b, location_id: b.location_id, response: "pending", notes: null, updated_at: b.starts_at } as unknown as Shift);
+        merged.set(b.id, { ...b, location_id: b.location_id, job_role_id: null, response: "pending", notes: null, updated_at: b.starts_at } as unknown as Shift);
       }
     }
     return [...merged.values()];
@@ -163,7 +163,7 @@ export function Schedule() {
     }
     for (const e of busy.employments) {
       if (!employments.has(e.id)) {
-        employments.set(e.id, { id: e.id, personId: e.person_id, companyId: e.company_id, locationIds: e.location_ids, jobRoleId: e.job_role_id });
+        employments.set(e.id, { id: e.id, personId: e.person_id, companyId: e.company_id, locationIds: e.location_ids });
       }
     }
     const changed = weekRow?.status === "published" && weekRow.published_at
@@ -197,6 +197,7 @@ export function Schedule() {
         minCount: c.min_count,
       })),
       changedShiftIds: changed,
+      combineRelatedCompanyHours: data.account.combine_related_company_hours,
       weeks: [week],
       now: new Date(),
     };
@@ -304,43 +305,11 @@ export function Schedule() {
       return;
     }
     try {
-      await ensureWeek();
-      const rowsToInsert = prev
-        .map((s) => ({
-          location_id: location!.id,
-          week_start: week,
-          employment_id: s.employment_id,
-          starts_at: new Date(Date.parse(s.starts_at) + 7 * 86400000).toISOString(),
-          ends_at: new Date(Date.parse(s.ends_at) + 7 * 86400000).toISOString(),
-          unpaid_break_minutes: s.unpaid_break_minutes,
-          job_role_id: s.job_role_id,
-          notes: s.notes,
-        }))
-        // Keep local clock times across daylight-saving changes
-        .map((r, i) => {
-          const s = prev[i];
-          const date = addDays(localDate(new Date(s.starts_at), tz), 7);
-          return { ...r, starts_at: zonedToUtc(date, hhmm(s.starts_at, tz), tz).toISOString(), ends_at: zonedToUtc(date, hhmm(s.ends_at, tz), tz).toISOString() };
-        })
-        // Compare instants, not strings ("14:00:00+00:00" and "14:00:00.000Z" are the same time)
-        .filter(
-          (r) =>
-            !weekShifts.some(
-              (x) =>
-                x.employment_id === r.employment_id &&
-                Date.parse(x.starts_at) === Date.parse(r.starts_at) &&
-                Date.parse(x.ends_at) === Date.parse(r.ends_at),
-            ),
-        );
-      // The database also refuses duplicates (shifts_no_duplicate); skip any that slip through.
-      if (rowsToInsert.length) {
-        must(
-          await supabase
-            .from("shifts")
-            .upsert(rowsToInsert, { onConflict: "employment_id,location_id,starts_at,ends_at", ignoreDuplicates: true }),
-        );
-      }
-      setToast(t.copied(rowsToInsert.length));
+      // Done on the server, one copy at a time: a double click, a retry or a second manager copies nothing more.
+      const { data: res, error: err } = await supabase.rpc("copy_week", { p_location_id: location!.id, p_from_week: addDays(week, -7), p_to_week: week });
+      if (err) throw err;
+      if (!res?.ok) throw new Error(t.error);
+      setToast(t.copied(res.copied));
       await load();
     } catch (e) {
       setError(friendly(e, t));

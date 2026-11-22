@@ -72,6 +72,24 @@ export async function fetchUpcomingShifts(employments: Employment[]): Promise<Sh
   return ((shifts.data as (Shift & { week_start: string })[]) ?? []).filter((s) => published.has(`${s.location_id}|${s.week_start}`));
 }
 
+/**
+ * Of these shift ids (on the phone but not in the latest list), which are confirmed gone for me:
+ * deleted, given to someone else, or ended. A shift still mine and upcoming (e.g. moved past the
+ * 8-week window) is not "gone". Throws if the server can't confirm, so nothing is deleted.
+ */
+async function confirmGone(shiftIds: string[], employments: Employment[]): Promise<Set<string>> {
+  if (!shiftIds.length) return new Set();
+  const mine = new Set(employments.map((e) => e.id));
+  const { data, error } = await supabase.from("shifts").select("id, employment_id, ends_at").in("id", shiftIds);
+  if (error) throw new Error(error.message);
+  const stillMine = new Set(
+    ((data as { id: string; employment_id: string | null; ends_at: string }[]) ?? [])
+      .filter((x) => x.employment_id && mine.has(x.employment_id) && Date.parse(x.ends_at) > Date.now())
+      .map((x) => x.id),
+  );
+  return new Set(shiftIds.filter((id) => !stillMine.has(id)));
+}
+
 // ---------------------------------------------------------------- Calendar
 
 type CalMap = Record<string, { e: string; sig: string; end: string }>;
@@ -136,97 +154,143 @@ export async function removeCalendar(): Promise<void> {
 
 export type SyncOutcome = { ok: true; count: number } | { ok: false; reason: "calendar_denied" | "notifications_denied" | "error"; message?: string };
 
-async function syncCalendar(shifts: Shift[], locations: Location[], t: Strings): Promise<SyncOutcome> {
+async function syncCalendar(shifts: Shift[], locations: Location[], employments: Employment[], t: Strings): Promise<SyncOutcome> {
   const perm = await requestCalendarPermissions();
   if (!perm.granted) return { ok: false, reason: "calendar_denied" };
   const cal = await ensureCalendar(t);
   const map = await readMap();
-  const next: CalMap = {};
-  for (const s of shifts) {
-    const loc = locations.find((l) => l.id === s.location_id);
-    const where = [loc?.name, loc?.address].filter(Boolean).join(", ");
-    const details = {
-      title: t.calendarEventTitle(loc?.name ?? ""),
-      startDate: new Date(s.starts_at),
-      endDate: new Date(s.ends_at),
-      location: where,
-      notes: s.unpaid_break_minutes ? t.calendarBreak(s.unpaid_break_minutes) : "",
-      timeZone: loc?.timezone,
-    };
-    const sig = `${s.starts_at}|${s.ends_at}|${where}|${s.unpaid_break_minutes}`;
-    const known = map[s.id];
-    if (known && known.sig === sig) {
-      next[s.id] = known;
-      continue;
+  // Start from what's on the phone; each step updates it and it's saved even if a later step fails,
+  // so a failure never loses track of events (no duplicates, no orphans).
+  const next: CalMap = { ...map };
+  try {
+    for (const s of shifts) {
+      const loc = locations.find((l) => l.id === s.location_id);
+      const where = [loc?.name, loc?.address].filter(Boolean).join(", ");
+      const details = {
+        title: t.calendarEventTitle(loc?.name ?? ""),
+        startDate: new Date(s.starts_at),
+        endDate: new Date(s.ends_at),
+        location: where,
+        notes: s.unpaid_break_minutes ? t.calendarBreak(s.unpaid_break_minutes) : "",
+        timeZone: loc?.timezone,
+      };
+      const sig = `${s.starts_at}|${s.ends_at}|${where}|${s.unpaid_break_minutes}`;
+      const known = map[s.id];
+      if (known && known.sig === sig) continue;
+      let eventId: string | null = null;
+      if (known) {
+        try {
+          const ev = await ExpoCalendarEvent.get(known.e);
+          await ev.update(details);
+          eventId = known.e;
+        } catch {
+          eventId = null;
+        }
+      }
+      if (!eventId) eventId = (await cal.createEvent(details)).id;
+      next[s.id] = { e: eventId, sig, end: s.ends_at };
     }
-    let eventId: string | null = null;
-    if (known) {
-      try {
-        const ev = await ExpoCalendarEvent.get(known.e);
-        await ev.update(details);
-        eventId = known.e;
-      } catch {
-        eventId = null;
+    // Events whose shift is no longer in the list: delete only those the server confirms are gone.
+    const listed = new Set(shifts.map((s) => s.id));
+    const missing = Object.keys(map).filter((id) => !listed.has(id));
+    const gone = await confirmGone(missing, employments);
+    for (const shiftId of missing) {
+      const entry = map[shiftId];
+      if (Date.parse(entry.end) <= Date.now()) {
+        delete next[shiftId]; // past: keep the event as history, stop tracking it
+      } else if (gone.has(shiftId)) {
+        try {
+          await (await ExpoCalendarEvent.get(entry.e)).delete();
+        } catch {
+          /* already gone */
+        }
+        delete next[shiftId];
       }
     }
-    if (!eventId) eventId = (await cal.createEvent(details)).id;
-    next[s.id] = { e: eventId, sig, end: s.ends_at };
+  } finally {
+    await AsyncStorage.setItem(KEY_CAL_MAP, JSON.stringify(next));
   }
-  // Shifts that disappeared (given away, removed): delete their future events.
-  for (const [shiftId, entry] of Object.entries(map)) {
-    if (next[shiftId]) continue;
-    if (Date.parse(entry.end) > Date.now()) {
-      try {
-        await (await ExpoCalendarEvent.get(entry.e)).delete();
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-  await AsyncStorage.setItem(KEY_CAL_MAP, JSON.stringify(next));
   return { ok: true, count: shifts.length };
 }
 
 // ---------------------------------------------------------------- Reminders
 
-async function cancelReminders(): Promise<void> {
-  let ids: string[] = [];
+// Reminders are scheduled with a fixed id per shift ("cw-shift-<id>"): scheduling again replaces it.
+// The phone keeps { shiftId: signature } so unchanged reminders are left alone.
+type ReminderMap = Record<string, string>;
+
+async function readReminders(): Promise<ReminderMap> {
+  let raw: unknown = {};
   try {
-    ids = JSON.parse((await AsyncStorage.getItem(KEY_REMINDER_IDS)) ?? "[]") as string[];
+    raw = JSON.parse((await AsyncStorage.getItem(KEY_REMINDER_IDS)) ?? "{}");
   } catch {
-    ids = [];
+    raw = {};
   }
-  await Promise.all(ids.map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => undefined)));
-  await AsyncStorage.setItem(KEY_REMINDER_IDS, "[]");
+  if (!Array.isArray(raw)) return raw as ReminderMap;
+  // Version 0.3 stored a list of random ids: cancel those once, they'll be rescheduled with fixed ids.
+  await Promise.all((raw as string[]).map((id) => Notifications.cancelScheduledNotificationAsync(id).catch(() => undefined)));
+  await AsyncStorage.setItem(KEY_REMINDER_IDS, "{}");
+  return {};
 }
 
-async function syncReminders(shifts: Shift[], locations: Location[], minutes: number, t: Strings, lang: Lang): Promise<SyncOutcome> {
-  await cancelReminders();
-  if (!minutes) return { ok: true, count: 0 };
+const reminderId = (shiftId: string) => `cw-shift-${shiftId}`;
+
+async function cancelReminders(): Promise<void> {
+  const map = await readReminders();
+  await Promise.all(Object.keys(map).map((id) => Notifications.cancelScheduledNotificationAsync(reminderId(id)).catch(() => undefined)));
+  await AsyncStorage.setItem(KEY_REMINDER_IDS, "{}");
+}
+
+async function syncReminders(shifts: Shift[], locations: Location[], employments: Employment[], minutes: number, t: Strings, lang: Lang): Promise<SyncOutcome> {
+  if (!minutes) {
+    await cancelReminders(); // turned off by the employee
+    return { ok: true, count: 0 };
+  }
   let perm = await Notifications.getPermissionsAsync();
   if (!perm.granted) perm = await Notifications.requestPermissionsAsync();
-  if (!perm.granted) return { ok: false, reason: "notifications_denied" };
+  if (!perm.granted) return { ok: false, reason: "notifications_denied" }; // leave existing reminders as they are
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync(CHANNEL, { name: t.reminderChannel, importance: Notifications.AndroidImportance.HIGH });
   }
-  const ids: string[] = [];
-  for (const s of shifts) {
-    if (ids.length >= MAX_REMINDERS) break;
-    const at = Date.parse(s.starts_at) - minutes * 60_000;
-    if (at < Date.now() + 30_000) continue;
-    const loc = locations.find((l) => l.id === s.location_id);
-    const tz = loc?.timezone;
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: t.reminderTitle(fmtDay(s.starts_at, lang, tz), fmtTime(s.starts_at, tz), loc?.name ?? ""),
-        body: loc?.address ?? loc?.name ?? "",
-      },
-      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: at, channelId: CHANNEL },
-    });
-    ids.push(id);
+  const old = await readReminders();
+  const next: ReminderMap = { ...old };
+  const wanted = new Set<string>();
+  try {
+    for (const s of shifts) {
+      if (wanted.size >= MAX_REMINDERS) break;
+      const at = Date.parse(s.starts_at) - minutes * 60_000;
+      if (at < Date.now() + 30_000) continue;
+      wanted.add(s.id);
+      const loc = locations.find((l) => l.id === s.location_id);
+      const tz = loc?.timezone;
+      const sig = `${at}|${loc?.name ?? ""}|${loc?.address ?? ""}|${lang}`;
+      if (old[s.id] === sig) continue;
+      await Notifications.scheduleNotificationAsync({
+        identifier: reminderId(s.id),
+        content: {
+          title: t.reminderTitle(fmtDay(s.starts_at, lang, tz), fmtTime(s.starts_at, tz), loc?.name ?? ""),
+          body: loc?.address ?? loc?.name ?? "",
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: at, channelId: CHANNEL },
+      });
+      next[s.id] = sig;
+    }
+    // Reminders for shifts not in the list: cancel when the server confirms the shift is gone,
+    // or when the reminder is no longer wanted (too soon, past, beyond the limit) but the shift is in the list.
+    const listed = new Set(shifts.map((s) => s.id));
+    const missing = Object.keys(old).filter((id) => !listed.has(id));
+    const gone = await confirmGone(missing, employments);
+    for (const id of Object.keys(old)) {
+      if (wanted.has(id)) continue;
+      if (listed.has(id) || gone.has(id)) {
+        await Notifications.cancelScheduledNotificationAsync(reminderId(id)).catch(() => undefined);
+        delete next[id];
+      }
+    }
+  } finally {
+    await AsyncStorage.setItem(KEY_REMINDER_IDS, JSON.stringify(next));
   }
-  await AsyncStorage.setItem(KEY_REMINDER_IDS, JSON.stringify(ids));
-  return { ok: true, count: ids.length };
+  return { ok: true, count: wanted.size };
 }
 
 // ---------------------------------------------------------------- Both
@@ -242,12 +306,13 @@ export function syncShifts(opts: { employments: Employment[]; locations: Locatio
         await cancelReminders();
         return [];
       }
-      // No employment loaded (e.g. the profile didn't load): leave the phone as it is.
+      // Profile or clinics didn't load: leave the phone as it is (an empty list would delete everything).
       if (opts.employments.length === 0) return [{ ok: false, reason: "error", message: "no_employments" }];
+      if (opts.locations.length === 0) return [{ ok: false, reason: "error", message: "no_locations" }];
       const shifts = await fetchUpcomingShifts(opts.employments);
       const out: SyncOutcome[] = [];
-      if (prefs.calendar) out.push(await syncCalendar(shifts, opts.locations, opts.t));
-      out.push(await syncReminders(shifts, opts.locations, prefs.reminderMinutes, opts.t, opts.lang));
+      if (prefs.calendar) out.push(await syncCalendar(shifts, opts.locations, opts.employments, opts.t));
+      out.push(await syncReminders(shifts, opts.locations, opts.employments, prefs.reminderMinutes, opts.t, opts.lang));
       return out;
     } catch (e) {
       return [{ ok: false, reason: "error", message: (e as Error).message }];

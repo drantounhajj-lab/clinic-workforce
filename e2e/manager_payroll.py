@@ -52,7 +52,7 @@ with sync_playwright() as p:
 
     page.goto(f"{APP}/#timesheets")
     page.wait_for_timeout(1200)
-    page.select_option("#ts-period", index=0)  # current period
+    page.select_option("#ts-period", value="2026-11-08")  # the period with the test punches (Nov 16–20)
     page.wait_for_timeout(1500)
     page.screenshot(path=f"{OUT}/16-timesheets.png", full_page=True)
     print("rows:", page.locator("table.table > tbody > tr").all_inner_texts())
