@@ -25,7 +25,9 @@ import {
   type Person,
   type ScheduleWeek,
   type Shift,
+  type ScheduleTemplate,
   type ShiftClaim,
+  type StaffingRatioRule,
   supabase,
   type TimeOffRequest,
 } from "../supabase";
@@ -37,6 +39,16 @@ interface Candidate {
   claimed: boolean;
   blocking: string[];
   warnings: string[];
+  /** Scheduled minutes that week (same employer, or all when hours are combined) if they take it. */
+  weekMinutes: number;
+  overtimeMinutes: number;
+}
+
+/** An open offer on a shift: who was invited and who declined. */
+interface OfferInfo {
+  id: string;
+  invited: number;
+  declined: number;
 }
 
 interface Draft {
@@ -47,6 +59,9 @@ interface Draft {
   end: string;
   breakMin: number;
   jobRoleId: string | null;
+  /** New shifts only: 0 = once, 1 = every week, 2 = every 2 weeks, until this date. */
+  repeat?: 0 | 1 | 2;
+  until?: string;
 }
 
 const hhmm = (iso: string, tz: string) =>
@@ -69,6 +84,9 @@ export function Schedule() {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [coverage, setCoverage] = useState<CoverageRule[]>([]);
   const [claims, setClaims] = useState<ShiftClaim[]>([]);
+  const [ratios, setRatios] = useState<StaffingRatioRule[]>([]);
+  const [offers, setOffers] = useState<Record<string, OfferInfo>>({});
+  const [showTemplates, setShowTemplates] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
@@ -97,7 +115,13 @@ export function Schedule() {
           : Promise.resolve({ data: [], error: null }),
         personIds.length ? supabase.from("availability_rules").select("*").in("person_id", personIds).eq("status", "approved") : Promise.resolve({ data: [], error: null }),
         personIds.length
-          ? supabase.from("availability_exceptions").select("*").in("person_id", personIds).eq("status", "approved").gte("date", week).lt("date", addDays(week, 7))
+          ? supabase
+              .from("availability_exceptions")
+              .select("*")
+              .in("person_id", personIds)
+              .eq("status", "approved")
+              .lte("date", addDays(week, 7))
+              .or(`end_date.gte.${week},date.gte.${week}`)
           : Promise.resolve({ data: [], error: null }),
         personIds.length ? supabase.rpc("busy_shifts", { p_person_ids: personIds, p_from: from, p_to: to }) : Promise.resolve({ data: { shifts: [], employments: [] }, error: null }),
         personIds.length
@@ -107,6 +131,20 @@ export function Schedule() {
         supabase.from("coverage_rules").select("*").eq("location_id", location.id),
         supabase.from("shift_claims").select("*").eq("location_id", location.id).eq("status", "pending"),
       ]);
+      const [rat, offerRes] = await Promise.all([
+        supabase.from("staffing_ratio_rules").select("*").eq("location_id", location.id),
+        supabase.from("coverage_offers").select("id, shift_id, coverage_invites(status)").eq("location_id", location.id).eq("status", "open"),
+      ]);
+      setRatios(must(rat) as StaffingRatioRule[]);
+      const offerRows = (must(offerRes) as { id: string; shift_id: string; coverage_invites: { status: string }[] }[]) ?? [];
+      setOffers(
+        Object.fromEntries(
+          offerRows.map((o) => [
+            o.shift_id,
+            { id: o.id, invited: o.coverage_invites.length, declined: o.coverage_invites.filter((i) => i.status === "declined").length },
+          ]),
+        ),
+      );
       setWeekRow(must(w) as ScheduleWeek | null);
       const merged = new Map<string, Shift>();
       for (const s of [...(must(atClinic) as Shift[]), ...(must(ofStaff) as Shift[])]) merged.set(s.id, s);
@@ -183,8 +221,29 @@ export function Schedule() {
           unpaidBreakMinutes: s.unpaid_break_minutes,
           jobRoleId: s.job_role_id,
         })),
-      availabilityRules: rules.map((r) => ({ personId: r.person_id, weekday: r.weekday, start: r.start_time.slice(0, 5), end: r.end_time.slice(0, 5), status: r.status })),
-      availabilityExceptions: exceptions.map((x) => ({ personId: x.person_id, date: x.date, start: x.start_time?.slice(0, 5), end: x.end_time?.slice(0, 5), status: x.status })),
+      availabilityRules: rules.map((r) => ({
+        personId: r.person_id,
+        weekday: r.weekday,
+        start: r.start_time.slice(0, 5),
+        end: r.end_time.slice(0, 5),
+        status: r.status,
+        kind: r.kind,
+        effectiveFrom: r.effective_from,
+        effectiveTo: r.effective_to,
+        everyWeeks: r.every_weeks,
+        anchorWeek: r.anchor_week,
+        locationIds: r.location_ids,
+      })),
+      availabilityExceptions: exceptions.map((x) => ({
+        personId: x.person_id,
+        date: x.date,
+        endDate: x.end_date,
+        start: x.start_time?.slice(0, 5),
+        end: x.end_time?.slice(0, 5),
+        status: x.status,
+        kind: x.kind,
+        locationIds: x.location_ids,
+      })),
       timeOff: timeOff.map((o) => ({ personId: o.person_id, startDate: o.start_date, endDate: o.end_date, start: o.start_time?.slice(0, 5), end: o.end_time?.slice(0, 5), type: o.type })),
       credentials: credentials.map((c) => ({ personId: c.person_id, name: c.name, expiresOn: c.expires_on, blocksSchedulingWhenExpired: c.blocks_scheduling })),
       coverageRules: coverage.map((c) => ({
@@ -196,12 +255,23 @@ export function Schedule() {
         end: c.end_time.slice(0, 5),
         minCount: c.min_count,
       })),
+      staffingRatios: ratios.map((x) => ({
+        id: x.id,
+        locationId: x.location_id,
+        weekdays: x.weekdays,
+        start: x.start_time.slice(0, 5),
+        end: x.end_time.startsWith("24") ? "24:00" : x.end_time.slice(0, 5),
+        triggerJobRoleId: x.trigger_job_role_id,
+        triggerCount: x.trigger_count,
+        requiredJobRoleId: x.required_job_role_id,
+        requiredCount: x.required_count,
+      })),
       changedShiftIds: changed,
       combineRelatedCompanyHours: data.account.combine_related_company_hours,
       weeks: [week],
       now: new Date(),
     };
-  }, [data, location, allShifts, shifts, rules, exceptions, timeOff, credentials, coverage, week, weekRow, busy]);
+  }, [data, location, allShifts, shifts, rules, exceptions, timeOff, credentials, coverage, ratios, week, weekRow, busy]);
 
   const result = useMemo(() => (baseInput ? validateSchedule(baseInput) : null), [baseInput]);
 
@@ -220,7 +290,9 @@ export function Schedule() {
           shifts: baseInput.shifts.map((x) => (x.id === shiftId ? { ...x, employmentId: e.id, jobRoleId: position } : x)),
           changedShiftIds: [],
         });
-        const mine = trial.issues.filter((i) => i.shiftIds.includes(shiftId) && i.code !== "coverage_gap");
+        const mine = trial.issues.filter((i) => i.shiftIds.includes(shiftId) && i.code !== "coverage_gap" && i.code !== "overtime");
+        const ot = trial.issues.find((i) => i.code === "overtime" && i.shiftIds.includes(shiftId));
+        const target2 = trial.hours.find((h) => h.employmentId === e.id && h.week === week);
         const text = (i: Issue) => describe(i, allShifts, data.persons, data.employments, data.locations, data.jobRoles, t, lang, e.id);
         return {
           employmentId: e.id,
@@ -228,6 +300,8 @@ export function Schedule() {
           claimed: claims.some((c) => c.shift_id === shiftId && c.employment_id === e.id),
           blocking: mine.filter((i) => i.severity === "error").map(text),
           warnings: mine.filter((i) => i.severity === "warning").map(text),
+          weekMinutes: ot ? Number(ot.details.scheduledMinutes) : (target2?.scheduledMinutes ?? 0),
+          overtimeMinutes: ot ? Number(ot.details.overtimeMinutes) : 0,
         };
       })
       .sort((a, b) => Number(b.claimed) - Number(a.claimed) || a.blocking.length - b.blocking.length || a.warnings.length - b.warnings.length || a.name.localeCompare(b.name));
@@ -238,7 +312,7 @@ export function Schedule() {
 
   const weekShifts = shifts.filter((s) => s.location_id === location.id && s.week_start === week);
   const viewIssues = (result?.issues ?? []).filter(
-    (i) => i.shiftIds.some((id) => weekShifts.some((s) => s.id === id)) || (i.code === "coverage_gap" && i.details.locationId === location.id),
+    (i) => i.shiftIds.some((id) => weekShifts.some((s) => s.id === id)) || ((i.code === "coverage_gap" || i.code === "staffing_ratio") && i.details.locationId === location.id),
   );
   const errors = viewIssues.filter((i) => i.severity === "error");
   const warnings = viewIssues.filter((i) => i.severity === "warning");
@@ -260,10 +334,30 @@ export function Schedule() {
         week_start: week,
         employment_id: d.employmentId,
         starts_at: zonedToUtc(d.date, d.start, tz).toISOString(),
-        ends_at: zonedToUtc(d.date, d.end, tz).toISOString(),
+        // At or before the start: ends the next day (overnight)
+        ends_at: zonedToUtc(d.end <= d.start ? addDays(d.date, 1) : d.date, d.end, tz).toISOString(),
         unpaid_break_minutes: d.breakMin,
         job_role_id: d.jobRoleId,
       };
+      if (!d.id && (d.repeat ?? 0) > 0 && d.until) {
+        const { data: res, error: err } = await supabase.rpc("create_recurring_shifts", {
+          p_location_id: location!.id,
+          p_employment_id: d.employmentId,
+          p_job_role_id: d.jobRoleId,
+          p_first_date: d.date,
+          p_start: d.start,
+          p_end: d.end,
+          p_break: d.breakMin,
+          p_every_weeks: d.repeat,
+          p_until: d.until,
+        });
+        if (err) throw err;
+        if (!res?.ok) throw new Error(t.error);
+        setToast(t.recurringAdded(res.added));
+        setDraft(null);
+        await load();
+        return;
+      }
       const before = d.id ? shifts.find((x) => x.id === d.id) : undefined;
       if (before && before.employment_id === null && d.employmentId) {
         // Filling an open shift: save the hours first, then assign, so volunteers are answered
@@ -281,11 +375,20 @@ export function Schedule() {
     }
   }
 
-  async function requestCoverage(id: string) {
-    const { data: res, error: err } = await supabase.rpc("request_coverage", { p_shift_id: id });
+  async function offerShift(id: string, employmentIds: string[] | null) {
+    const { data: res, error: err } = await supabase.rpc("offer_shift", { p_shift_id: id, p_employment_ids: employmentIds });
     if (err) setError(friendly(err, t));
-    else if (!res?.ok) setToast(res?.reason === "not_open" ? t.coverageNotOpen : t.error);
-    else setToast(t.coverageRequested(res.notified));
+    else if (!res?.ok) setToast(t.offerErrors[res?.reason] ?? t.error);
+    else {
+      setToast(t.offeredTo(res.invited));
+      await load();
+    }
+  }
+
+  async function cancelOffer(offerId: string) {
+    const { data: res, error: err } = await supabase.rpc("cancel_offer", { p_offer_id: offerId });
+    if (err || !res?.ok) setError(err ? friendly(err, t) : t.error);
+    else await load();
   }
 
   async function deleteShift(id: string) {
@@ -425,6 +528,9 @@ export function Schedule() {
           <button type="button" onClick={copyPrevious}>
             {t.copyPrevious}
           </button>
+          <button type="button" onClick={() => setShowTemplates(true)}>
+            {t.templates}
+          </button>
           <button type="button" className="primary" onClick={publish}>
             {t.publish}
           </button>
@@ -543,10 +649,24 @@ export function Schedule() {
           positions={data.jobRoles.map((j) => ({ id: j.id, name: lang === "fr" ? j.name_fr : j.name_en }))}
           candidates={draft.id ? candidatesFor(draft.id) : []}
           published={weekRow?.status === "published"}
-          onRequestCoverage={draft.id ? () => requestCoverage(draft.id!) : undefined}
+          offer={draft.id ? offers[draft.id] : undefined}
+          onOffer={draft.id ? (ids) => offerShift(draft.id!, ids) : undefined}
+          onCancelOffer={cancelOffer}
           onCancel={() => setDraft(null)}
           onSave={saveShift}
           onDelete={deleteShift}
+        />
+      )}
+
+      {showTemplates && (
+        <TemplatesDialog
+          locationId={location.id}
+          week={week}
+          onClose={() => setShowTemplates(false)}
+          onDone={async (text) => {
+            setToast(text);
+            await load();
+          }}
         />
       )}
 
@@ -628,6 +748,17 @@ function describe(
         ? `${locations.find((l) => l.id === d.locationId)?.name} : ${pos} manquant ${day} de ${d.from} à ${d.to} (${d.scheduled}/${d.needed}).`
         : `${locations.find((l) => l.id === d.locationId)?.name}: ${pos} missing ${day} from ${d.from} to ${d.to} (${d.scheduled}/${d.needed}).`;
     }
+    case "staffing_ratio": {
+      const name = (id: unknown) => {
+        const j = jobRoles.find((x) => x.id === id);
+        return j ? (fr ? j.name_fr : j.name_en) : "";
+      };
+      const day = t.daysLong[weekdayOf(String(d.date))];
+      const clinic = locations.find((l) => l.id === d.locationId)?.name;
+      return fr
+        ? `${clinic} : ${d.triggerScheduled} ${name(d.triggerJobRoleId)} en poste ${day} de ${d.from} à ${d.to}, il faut au moins ${d.needed} ${name(d.requiredJobRoleId)} (${d.scheduled} prévu${Number(d.scheduled) > 1 ? "s" : ""}).`
+        : `${clinic}: ${d.triggerScheduled} ${name(d.triggerJobRoleId)} on shift ${day} from ${d.from} to ${d.to}, need at least ${d.needed} ${name(d.requiredJobRoleId)} (${d.scheduled} scheduled).`;
+    }
     case "credential_expiring": {
       const on = formatDate(String(d.expiresOn), lang, { day: "numeric", month: "long", year: "numeric" });
       return fr ? `${who} : ${d.credential} expire le ${on}.` : `${who}: ${d.credential} expires on ${on}.`;
@@ -653,7 +784,9 @@ function ShiftDialog({
   positions,
   candidates,
   published,
-  onRequestCoverage,
+  offer,
+  onOffer,
+  onCancelOffer,
   onCancel,
   onSave,
   onDelete,
@@ -666,13 +799,17 @@ function ShiftDialog({
   positions: { id: string; name: string }[];
   candidates: Candidate[];
   published: boolean;
-  onRequestCoverage?: () => void;
+  offer?: OfferInfo;
+  onOffer?: (employmentIds: string[] | null) => void;
+  onCancelOffer: (offerId: string) => void;
   onCancel: () => void;
   onSave: (d: Draft) => void;
   onDelete: (id: string) => void;
 }) {
-  const [d, setD] = useState(draft);
-  const valid = d.end > d.start;
+  const [d, setD] = useState<Draft>({ repeat: 0, until: addDays(draft.date, 28), ...draft });
+  const [invite, setInvite] = useState<Set<string>>(new Set());
+  const overnight = d.end <= d.start;
+  const valid = d.end !== d.start;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
     window.addEventListener("keydown", onKey);
@@ -741,9 +878,28 @@ function ShiftDialog({
           </label>
         </div>
         {!valid && <p className="error">{t.endAfterStart}</p>}
+        {valid && overnight && <p className="muted small">{t.endsNextDay}</p>}
+        {!d.id && (
+          <div className="grid2">
+            <label className="field" htmlFor="s-repeat">
+              <span>{t.repeat}</span>
+              <select id="s-repeat" value={d.repeat ?? 0} onChange={(e) => setD({ ...d, repeat: Number(e.target.value) as 0 | 1 | 2 })}>
+                <option value={0}>{t.repeatNone}</option>
+                <option value={1}>{t.repeatWeekly}</option>
+                <option value={2}>{t.repeatBiweekly}</option>
+              </select>
+            </label>
+            {(d.repeat ?? 0) > 0 && (
+              <label className="field" htmlFor="s-until">
+                <span>{t.repeatUntil}</span>
+                <input id="s-until" type="date" value={d.until} min={d.date} max={addDays(d.date, 366)} onChange={(e) => setD({ ...d, until: e.target.value })} />
+              </label>
+            )}
+          </div>
+        )}
         {d.id && candidates.length > 0 && (
           <details className="cover" open={draft.employmentId === null}>
-            <summary>{t.findReplacement}</summary>
+            <summary>{draft.employmentId === null ? t.findCoverage : t.findReplacement}</summary>
             <p className="muted small">{t.findReplacementHint}</p>
             <ul className="plain candidates">
               {candidates.map((c) => (
@@ -753,10 +909,34 @@ function ShiftDialog({
                       <strong>{c.name}</strong>
                       {c.claimed && <span className="pill ok small-pill">{t.volunteered}</span>}
                     </span>
-                    <button type="button" className="link" disabled={c.blocking.length > 0} onClick={() => setD({ ...d, employmentId: c.employmentId })}>
-                      {d.employmentId === c.employmentId ? t.chosen : t.choose}
-                    </button>
+                    <span className="row">
+                      {draft.employmentId === null && published && onOffer && c.blocking.length === 0 && (
+                        <label className="check small" htmlFor={`inv-${c.employmentId}`}>
+                          <input
+                            id={`inv-${c.employmentId}`}
+                            type="checkbox"
+                            checked={invite.has(c.employmentId)}
+                            onChange={(e) => {
+                              const next = new Set(invite);
+                              if (e.target.checked) next.add(c.employmentId);
+                              else next.delete(c.employmentId);
+                              setInvite(next);
+                            }}
+                          />
+                          <span>{t.inviteSelected(1).replace(/\s*\(1\)/, "")}</span>
+                        </label>
+                      )}
+                      <button type="button" className="link" disabled={c.blocking.length > 0} onClick={() => setD({ ...d, employmentId: c.employmentId })}>
+                        {d.employmentId === c.employmentId ? t.chosen : t.choose}
+                      </button>
+                    </span>
                   </div>
+                  {c.weekMinutes > 0 && (
+                    <span className={`small block ${c.overtimeMinutes > 0 ? "warn" : "muted"}`}>
+                      {t.weekHoursWith(hours(c.weekMinutes, lang))}
+                      {c.overtimeMinutes > 0 ? ` · ${t.overtimeBy(hours(c.overtimeMinutes, lang))}` : ""}
+                    </span>
+                  )}
                   {c.blocking.length === 0 && c.warnings.length === 0 && <span className="ok-text small">{t.available}</span>}
                   {[...c.blocking, ...c.warnings].map((m, i) => (
                     <span key={i} className="small muted block">
@@ -766,10 +946,26 @@ function ShiftDialog({
                 </li>
               ))}
             </ul>
-            {draft.employmentId === null && published && onRequestCoverage && (
-              <button type="button" onClick={onRequestCoverage}>
-                {t.askTeam}
-              </button>
+            {draft.employmentId === null && published && onOffer && (
+              <div className="stack-sm">
+                <p className="muted small">{t.findCoverageHint}</p>
+                {offer && (
+                  <p className="small">
+                    {t.offerState(offer.invited, offer.declined)}{" "}
+                    <button type="button" className="link small" onClick={() => onCancelOffer(offer.id)}>
+                      {t.cancelOffer}
+                    </button>
+                  </p>
+                )}
+                <div className="row">
+                  <button type="button" className="primary" disabled={invite.size === 0} onClick={() => onOffer([...invite])}>
+                    {t.inviteSelected(invite.size)}
+                  </button>
+                  <button type="button" onClick={() => onOffer(null)}>
+                    {t.inviteAllEligible}
+                  </button>
+                </div>
+              </div>
             )}
           </details>
         )}
@@ -790,4 +986,137 @@ function ShiftDialog({
       </form>
     </div>
   );
+}
+
+/** Save this week (or several as a rotation) as a template, or put a template on coming weeks. */
+function TemplatesDialog({ locationId, week, onClose, onDone }: { locationId: string; week: string; onClose: () => void; onDone: (text: string) => Promise<void> }) {
+  const { t, lang } = useSession();
+  const [list, setList] = useState<ScheduleTemplate[]>([]);
+  const [name, setName] = useState("");
+  const [weeks, setWeeks] = useState(1);
+  const [chosen, setChosen] = useState("");
+  const [count, setCount] = useState(4);
+  const [rotationStart, setRotationStart] = useState(week);
+  const [error, setError] = useState("");
+  const reload = useCallback(async () => {
+    const { data, error: err } = await supabase.from("schedule_templates").select("*").eq("location_id", locationId).order("name");
+    if (err) setError(friendly(err, t));
+    else {
+      setList(data as ScheduleTemplate[]);
+      if (!chosen && data?.length) setChosen((data as ScheduleTemplate[])[0].id);
+    }
+  }, [locationId, t, chosen]);
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const call = async (fn: string, args: Record<string, unknown>, ok: (r: Record<string, number>) => string) => {
+    setError("");
+    const { data, error: err } = await supabase.rpc(fn, args);
+    if (err || !data?.ok) setError(err ? friendly(err, t) : t.error);
+    else {
+      await onDone(ok(data));
+      await reload();
+    }
+  };
+  const selected = list.find((x) => x.id === chosen);
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="dialog stack" role="dialog" aria-modal="true" aria-labelledby="tpl-title" onClick={(e) => e.stopPropagation()}>
+        <h2 id="tpl-title">{t.templates}</h2>
+        <section className="stack-sm">
+          <strong>{t.applyTemplate}</strong>
+          {list.length === 0 ? (
+            <p className="muted small">{t.noTemplates}</p>
+          ) : (
+            <>
+              <label className="field" htmlFor="tpl-pick">
+                <span>{t.templateName}</span>
+                <select id="tpl-pick" value={chosen} onChange={(e) => setChosen(e.target.value)}>
+                  {list.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name} ({x.weeks})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid2">
+                <label className="field" htmlFor="tpl-count">
+                  <span>{t.applyFor}</span>
+                  <input id="tpl-count" type="number" min={1} max={26} value={count} onChange={(e) => setCount(Math.min(26, Math.max(1, Number(e.target.value) || 1)))} />
+                </label>
+                {selected && selected.weeks > 1 && (
+                  <label className="field" htmlFor="tpl-rot">
+                    <span>{t.rotationStart}</span>
+                    <input id="tpl-rot" type="date" step={7} value={rotationStart} onChange={(e) => setRotationStart(e.target.value)} />
+                  </label>
+                )}
+              </div>
+              <div className="row">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() =>
+                    call("apply_template", { p_template_id: chosen, p_from_week: week, p_weeks: count, p_rotation_start: selected && selected.weeks > 1 ? localWeekStartOf(rotationStart) : null }, (r) =>
+                      t.templateApplied(r.added),
+                    )
+                  }
+                >
+                  {t.applyTemplate} · {formatDate(week, lang, { day: "numeric", month: "short" })}
+                </button>
+                <button
+                  type="button"
+                  className="danger link"
+                  onClick={async () => {
+                    const { error: err } = await supabase.from("schedule_templates").delete().eq("id", chosen);
+                    if (err) setError(friendly(err, t));
+                    else {
+                      setChosen("");
+                      await reload();
+                    }
+                  }}
+                >
+                  {t.deleteTemplate}
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+        <section className="stack-sm">
+          <strong>{t.saveAsTemplate}</strong>
+          <div className="grid2">
+            <label className="field" htmlFor="tpl-name">
+              <span>{t.templateName}</span>
+              <input id="tpl-name" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="field" htmlFor="tpl-weeks">
+              <span>{t.templateWeeks}</span>
+              <input id="tpl-weeks" type="number" min={1} max={8} value={weeks} onChange={(e) => setWeeks(Math.min(8, Math.max(1, Number(e.target.value) || 1)))} />
+            </label>
+          </div>
+          <p className="muted small">{t.templateWeeksHint}</p>
+          <button
+            type="button"
+            disabled={!name.trim()}
+            onClick={() => call("save_template", { p_location_id: locationId, p_name: name.trim(), p_first_week: week, p_weeks: weeks }, (r) => t.templateSaved(r.shifts))}
+          >
+            {t.saveAsTemplate}
+          </button>
+        </section>
+        {error && <p className="error">{error}</p>}
+        <div className="row">
+          <span className="spacer" />
+          <button type="button" onClick={onClose}>
+            {t.close}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Monday of the week containing a date (YYYY-MM-DD). */
+function localWeekStartOf(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  return addDays(date, -((d.getUTCDay() + 6) % 7));
 }

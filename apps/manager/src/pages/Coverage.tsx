@@ -1,7 +1,7 @@
 import { friendly } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../session";
-import { type CoverageRule, must, supabase } from "../supabase";
+import { type CoverageRule, must, type StaffingRatioRule, supabase } from "../supabase";
 
 /** Minimum number of people per position at a clinic, by day and time. */
 export function CoverageRules({ locationId }: { locationId: string }) {
@@ -157,6 +157,107 @@ export function PaySettings({ companyId }: { companyId: string }) {
         </button>
       )}
       {msg && <span className="muted">{msg}</span>}
+    </div>
+  );
+}
+
+/** "Whenever N of position A are on shift, at least M of position B" for a clinic. */
+export function StaffingRatios({ locationId }: { locationId: string }) {
+  const { t, lang, data, can } = useSession();
+  const [rules, setRules] = useState<StaffingRatioRule[]>([]);
+  const [form, setForm] = useState({ trigger_job_role_id: "", trigger_count: 2, required_job_role_id: "", required_count: 1 });
+  const [error, setError] = useState("");
+  const editable = can(locationId, "schedule");
+  const load = useCallback(async () => {
+    const { data: rows, error: err } = await supabase.from("staffing_ratio_rules").select("*").eq("location_id", locationId).order("created_at");
+    if (err) setError(friendly(err, t));
+    else setRules((rows as StaffingRatioRule[]) ?? []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationId]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  if (!data) return null;
+  const positions = data.jobRoles;
+  const pos = (id: string) => {
+    const j = positions.find((x) => x.id === id);
+    return j ? (lang === "fr" ? j.name_fr : j.name_en).toLowerCase() : "?";
+  };
+  if (positions.length < 2 && rules.length === 0) return null;
+  const run = async (fn: () => Promise<void>) => {
+    setError("");
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(friendly(e, t));
+    }
+  };
+  return (
+    <div className="stack-sm">
+      <strong className="small">{t.staffingRatios}</strong>
+      <p className="muted small">{t.staffingRatiosHint}</p>
+      <ul className="plain small">
+        {rules.map((r) => (
+          <li key={r.id} className="row spread">
+            <span>{t.ratioText(r.trigger_count, pos(r.trigger_job_role_id), r.required_count, pos(r.required_job_role_id))}</span>
+            {editable && (
+              <button type="button" className="link small" onClick={() => run(async () => void must(await supabase.from("staffing_ratio_rules").delete().eq("id", r.id)))}>
+                {t.remove}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {editable && (
+        <form
+          className="row wrap small"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!form.trigger_job_role_id || !form.required_job_role_id || form.trigger_job_role_id === form.required_job_role_id) return;
+            run(async () => void must(await supabase.from("staffing_ratio_rules").insert({ location_id: locationId, ...form })));
+          }}
+        >
+          <span>{t.whenever}</span>
+          <input
+            aria-label={t.whenever}
+            type="number"
+            min={1}
+            max={50}
+            className="num"
+            value={form.trigger_count}
+            onChange={(e) => setForm({ ...form, trigger_count: Math.max(1, Number(e.target.value) || 1) })}
+          />
+          <select aria-label={t.filterPosition} value={form.trigger_job_role_id} onChange={(e) => setForm({ ...form, trigger_job_role_id: e.target.value })}>
+            <option value="">—</option>
+            {positions.map((j) => (
+              <option key={j.id} value={j.id}>
+                {lang === "fr" ? j.name_fr : j.name_en}
+              </option>
+            ))}
+          </select>
+          <span>{t.areOnShift}</span>
+          <input
+            aria-label={t.areOnShift}
+            type="number"
+            min={1}
+            max={50}
+            className="num"
+            value={form.required_count}
+            onChange={(e) => setForm({ ...form, required_count: Math.max(1, Number(e.target.value) || 1) })}
+          />
+          <select aria-label={t.filterPosition} value={form.required_job_role_id} onChange={(e) => setForm({ ...form, required_job_role_id: e.target.value })}>
+            <option value="">—</option>
+            {positions.map((j) => (
+              <option key={j.id} value={j.id}>
+                {lang === "fr" ? j.name_fr : j.name_en}
+              </option>
+            ))}
+          </select>
+          <button type="submit">{t.addRatio}</button>
+        </form>
+      )}
+      {error && <p className="error">{error}</p>}
     </div>
   );
 }

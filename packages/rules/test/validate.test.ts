@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type AvailabilityRuleInput,
   type EmploymentInput,
   type LocationInput,
   type ShiftInput,
@@ -282,5 +283,81 @@ describe("validateSchedule: travel, time off, coverage, expiring credentials", (
     const r = run([shift("marie-qc", "gatineau", 0, "09:00", "12:00", 0), shift("marie-qc", "gatineau", 1, "09:00", "12:00", 0)], { credentials: [cred] });
     expect(r.issues.filter((i) => i.code === "credential_expiring")).toHaveLength(1);
     expect(r.publishable).toBe(true);
+  });
+});
+
+describe("availability patterns (phase 2)", () => {
+  const avail = (extra: Partial<AvailabilityRuleInput> & Pick<AvailabilityRuleInput, "weekday" | "start" | "end">): AvailabilityRuleInput => ({
+    personId: "marie",
+    status: "approved",
+    ...extra,
+  });
+  const out = (s: ShiftInput, extra: Partial<ValidationInput>) => codes(run([s], extra)).includes("outside_availability");
+
+  it("alternating weeks: available Mondays of week A only", () => {
+    const rules = [avail({ weekday: 0, start: "08:00", end: "17:00", everyWeeks: 2, anchorWeek: WEEK })];
+    expect(out(shift("marie-qc", "gatineau", 0, "09:00", "16:00"), { availabilityRules: rules })).toBe(false);
+    const weekB = addDays(WEEK, 7);
+    expect(out(shift("marie-qc", "gatineau", 0, "09:00", "16:00", 30, weekB), { availabilityRules: rules, weeks: [weekB] })).toBe(true);
+    const weekA2 = addDays(WEEK, 14);
+    expect(out(shift("marie-qc", "gatineau", 0, "09:00", "16:00", 30, weekA2), { availabilityRules: rules, weeks: [weekA2] })).toBe(false);
+  });
+
+  it("effective dates: a pattern that ended no longer restricts; one not started yet doesn't either", () => {
+    const ended = [avail({ weekday: 1, start: "08:00", end: "10:00", effectiveFrom: "2026-01-05", effectiveTo: "2026-12-31" })];
+    expect(out(shift("marie-qc", "gatineau", 0, "13:00", "17:00"), { availabilityRules: ended })).toBe(false);
+    const future = [avail({ weekday: 1, start: "08:00", end: "10:00", effectiveFrom: "2027-02-01" })];
+    expect(out(shift("marie-qc", "gatineau", 0, "13:00", "17:00"), { availabilityRules: future })).toBe(false);
+  });
+
+  it("clinics: available Mondays at Hull only → a Gatineau shift is outside availability", () => {
+    const rules = [avail({ weekday: 0, start: "08:00", end: "17:00", locationIds: ["hull"] })];
+    expect(out(shift("marie-qc", "hull", 0, "09:00", "16:00"), { availabilityRules: rules })).toBe(false);
+    expect(out(shift("marie-qc", "gatineau", 0, "09:00", "16:00"), { availabilityRules: rules })).toBe(true);
+  });
+
+  it("weekly 'unavailable' and one-off days: unavailable wins, one-off available adds a window", () => {
+    const rules = [avail({ weekday: 2, start: "12:00", end: "18:00", kind: "unavailable" })];
+    expect(out(shift("marie-qc", "gatineau", 2, "13:00", "17:00"), { availabilityRules: rules })).toBe(true);
+    expect(out(shift("marie-qc", "gatineau", 2, "08:00", "12:00"), { availabilityRules: rules })).toBe(false);
+    const range = [{ personId: "marie", date: addDays(WEEK, 3), endDate: addDays(WEEK, 4), status: "approved" as const }];
+    expect(out(shift("marie-qc", "gatineau", 4, "09:00", "12:00"), { availabilityExceptions: range })).toBe(true);
+    const pattern = [avail({ weekday: 0, start: "08:00", end: "12:00" })];
+    const extra = [{ personId: "marie", date: addDays(WEEK, 5), start: "09:00", end: "15:00", kind: "available" as const, status: "approved" as const }];
+    expect(out(shift("marie-qc", "gatineau", 5, "10:00", "14:00"), { availabilityRules: pattern })).toBe(true);
+    expect(out(shift("marie-qc", "gatineau", 5, "10:00", "14:00"), { availabilityRules: pattern, availabilityExceptions: extra })).toBe(false);
+  });
+});
+
+describe("staffing ratios (phase 2)", () => {
+  const emps: EmploymentInput[] = [
+    { id: "p1", personId: "p1", companyId: "co-qc", locationIds: ["gatineau"], jobRoleId: "pod" },
+    { id: "p2", personId: "p2", companyId: "co-qc", locationIds: ["gatineau"], jobRoleId: "pod" },
+    { id: "r1", personId: "r1", companyId: "co-qc", locationIds: ["gatineau"], jobRoleId: "rec" },
+    { id: "a1", personId: "a1", companyId: "co-qc", locationIds: ["gatineau"], jobRoleId: "asst" },
+  ];
+  const ratios = [
+    { id: "need-rec", locationId: "gatineau", weekdays: [0, 1, 2, 3, 4], start: "00:00", end: "24:00", triggerJobRoleId: "pod", triggerCount: 2, requiredJobRoleId: "rec", requiredCount: 1 },
+    { id: "need-asst", locationId: "gatineau", weekdays: [0, 1, 2, 3, 4], start: "00:00", end: "24:00", triggerJobRoleId: "pod", triggerCount: 2, requiredJobRoleId: "asst", requiredCount: 1 },
+  ];
+  const gaps = (shifts: ShiftInput[]) =>
+    run(shifts, { employments: emps, staffingRatios: ratios }).issues.filter((i) => i.code === "staffing_ratio").map((i) => `${i.details.ruleId} ${i.details.from}-${i.details.to}`);
+
+  it("two podiatrists 09–17 with a receptionist 09–13 and an assistant all day: receptionist missing 13–17", () => {
+    expect(gaps([
+      shift("p1", "gatineau", 0, "09:00", "17:00"),
+      shift("p2", "gatineau", 0, "09:00", "17:00"),
+      shift("r1", "gatineau", 0, "09:00", "13:00"),
+      shift("a1", "gatineau", 0, "08:00", "18:00"),
+    ])).toEqual(["need-rec 13:00-17:00"]);
+  });
+
+  it("one podiatrist: no requirement; two only overlapping 11–14: needs only then", () => {
+    expect(gaps([shift("p1", "gatineau", 0, "09:00", "17:00")])).toEqual([]);
+    expect(gaps([
+      shift("p1", "gatineau", 0, "08:00", "14:00"),
+      shift("p2", "gatineau", 0, "11:00", "17:00"),
+      shift("r1", "gatineau", 0, "08:00", "17:00"),
+    ])).toEqual(["need-asst 11:00-14:00"]);
   });
 });

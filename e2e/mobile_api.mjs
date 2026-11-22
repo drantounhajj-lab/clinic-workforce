@@ -54,9 +54,19 @@ await check("set_my_locale", sb.rpc("set_my_locale", { p_locale: "fr-CA" }));
 await check("register_push_token", sb.rpc("register_push_token", { p_token: "ExponentPushToken[marie1234567890]", p_platform: "ios" }));
 await check("punch_with_location (far away, refused expected)", sb.rpc("punch_with_location", { p_location_id: locIds[0], p_latitude: 45.0, p_longitude: -75.0, p_accuracy_m: 10, p_wifi_bssid: null, p_mocked: false }), false);
 await check("punch_with_location (at clinic)", sb.rpc("punch_with_location", { p_location_id: locIds[0], p_latitude: 45.4765, p_longitude: -75.7013, p_accuracy_m: 10, p_wifi_bssid: null, p_mocked: false }));
-await check("request_time_off partial", sb.rpc("request_time_off", { p_type: "personal", p_start: "2026-12-02", p_end: "2026-12-02", p_start_time: "09:00", p_end_time: "11:00", p_note: null }));
+await check("request_time_off partial (old app versions)", sb.rpc("request_time_off", { p_type: "personal", p_start: "2026-12-02", p_end: "2026-12-02", p_start_time: "09:00", p_end_time: "11:00", p_note: null }));
+const leaveTypes = await check("leave types", sb.from("leave_types").select("id, name_fr, name_en, category").eq("active", true).order("sort"));
+await check("request_leave with private reason", sb.rpc("request_leave", { p_leave_type_id: leaveTypes[0].id, p_start: "2026-12-14", p_end: "2026-12-18", p_start_time: null, p_end_time: null, p_reason: "Voyage" }));
+await check("my reasons", sb.from("time_off_reasons").select("request_id, reason"));
+await check("one-off unavailable range", sb.from("availability_exceptions").insert({ person_id: me.id, date: "2026-12-21", end_date: "2026-12-23", kind: "unavailable" }));
+await check("one-off extra availability", sb.from("availability_exceptions").insert({ person_id: me.id, date: "2026-12-26", start_time: "09:00", end_time: "13:00", kind: "available" }));
+await check("my one-offs", sb.from("availability_exceptions").select("*").eq("person_id", me.id));
+await check("my_offers", sb.rpc("my_offers"));
 await check("delete pending availability", sb.from("availability_rules").delete().eq("person_id", me.id).eq("status", "pending"));
-await check("insert availability", sb.from("availability_rules").insert([{ person_id: me.id, weekday: 1, start_time: "09:00", end_time: "17:00" }]));
+await check("insert availability (alternating weeks, effective dates, clinics)", sb.from("availability_rules").insert([
+  { person_id: me.id, weekday: 1, start_time: "09:00", end_time: "17:00", effective_from: "2026-12-07", every_weeks: 2, anchor_week: "2026-12-07", location_ids: locIds.slice(0, 1) },
+  { person_id: me.id, weekday: 3, start_time: "00:00", end_time: "23:59", effective_from: "2026-12-07", kind: "unavailable" },
+], { defaultToNull: false }));
 await check("request_punch_correction", sb.rpc("request_punch_correction", { p_location_id: locIds[0], p_kind: "out", p_occurred_at: new Date(Date.now() - 3 * 3600e3).toISOString(), p_reason: "Forgot" }));
 const future = upcoming.find((s) => Date.parse(s.starts_at) > Date.now());
 if (future) {

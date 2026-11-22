@@ -8,14 +8,15 @@ import { Punches } from "./pages/Punches";
 import { Requests } from "./pages/Requests";
 import { Timesheets } from "./pages/Timesheets";
 import { Roles } from "./pages/Roles";
+import { Overview } from "./pages/Overview";
 import { Schedule } from "./pages/Schedule";
 import { Swaps } from "./pages/Swaps";
 import { personName, SessionProvider, useSession } from "./session";
 import { type Permission, supabase } from "./supabase";
 import "./styles.css";
 
-type Page = "schedule" | "swaps" | "requests" | "timesheets" | "employees" | "roles" | "clinics" | "kiosks" | "punches";
-const PAGES: Page[] = ["schedule", "swaps", "requests", "timesheets", "employees", "roles", "clinics", "kiosks", "punches"];
+type Page = "schedule" | "overview" | "swaps" | "requests" | "timesheets" | "employees" | "roles" | "clinics" | "kiosks" | "punches";
+const PAGES: Page[] = ["schedule", "overview", "swaps", "requests", "timesheets", "employees", "roles", "clinics", "kiosks", "punches"];
 
 function pageFromHash(): Page | null {
   const h = window.location.hash.replace("#", "") as Page;
@@ -48,13 +49,14 @@ function Shell() {
 
   const canRequests = visiblePages.includes("requests");
   const countRequests = useCallback(async () => {
-    const [a, b, c] = await Promise.all([
+    const [a, b, c, d] = await Promise.all([
       supabase.from("time_off_requests").select("id", { count: "exact", head: true }).eq("status", "pending"),
       supabase.from("availability_rules").select("person_id").eq("status", "pending"),
       supabase.from("punch_corrections").select("id", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("availability_exceptions").select("id", { count: "exact", head: true }).eq("status", "pending"),
     ]);
     const people = new Set(((b.data as { person_id: string }[]) ?? []).map((x) => x.person_id)).size;
-    setPendingRequests((a.count ?? 0) + people + (c.count ?? 0));
+    setPendingRequests((a.count ?? 0) + people + (c.count ?? 0) + (d.count ?? 0));
   }, []);
   useEffect(() => {
     if (!canRequests) return;
@@ -153,6 +155,7 @@ function Shell() {
       </header>
       <main>
         {page === "schedule" && <Schedule />}
+        {page === "overview" && <Overview />}
         {page === "swaps" && <Swaps onChange={countSwaps} />}
         {page === "requests" && <Requests onChange={countRequests} />}
         {page === "timesheets" && <Timesheets />}
@@ -171,6 +174,7 @@ function useShellState() {
   const has = (perm: Permission) => s.locationsWith(perm).length > 0;
   const allowed: Record<Page, boolean> = {
     schedule: has("schedule"),
+    overview: has("schedule"),
     swaps: has("schedule"),
     requests: has("schedule") || has("employees") || has("punches"),
     timesheets: has("punches"),

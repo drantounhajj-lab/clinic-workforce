@@ -112,14 +112,82 @@ export interface AvailabilityRule {
   start_time: string;
   end_time: string;
   status: "pending" | "approved" | "rejected";
+  kind: "available" | "unavailable";
+  effective_from: string;
+  effective_to: string | null;
+  every_weeks: number;
+  anchor_week: string | null;
+  location_ids: string[] | null;
 }
 
 export interface AvailabilityException {
+  id: string;
   person_id: string;
   date: string;
+  end_date: string | null;
   start_time: string | null;
   end_time: string | null;
+  kind: "available" | "unavailable";
+  location_ids: string[] | null;
+  reason: string | null;
   status: "pending" | "approved" | "rejected";
+}
+
+export interface LeaveType {
+  id: string;
+  category: TimeOffType;
+  name_fr: string;
+  name_en: string;
+  active: boolean;
+  sort: number;
+}
+
+export interface StaffingRatioRule {
+  id: string;
+  location_id: string;
+  weekdays: number[];
+  start_time: string;
+  end_time: string;
+  trigger_job_role_id: string;
+  trigger_count: number;
+  required_job_role_id: string;
+  required_count: number;
+}
+
+export interface ScheduleTemplate {
+  id: string;
+  location_id: string;
+  name: string;
+  weeks: number;
+  created_at: string;
+}
+
+/** A person's shift during a leave, at any clinic (time_off_impact). */
+export interface ImpactShift {
+  id: string;
+  location_id: string;
+  location_name: string;
+  starts_at: string;
+  ends_at: string;
+  week_start: string;
+  can_schedule: boolean;
+}
+
+export interface CoverageOffer {
+  id: string;
+  shift_id: string;
+  location_id: string;
+  status: "open" | "filled" | "cancelled";
+  filled_employment_id: string | null;
+  created_at: string;
+}
+
+export interface CoverageInvite {
+  offer_id: string;
+  employment_id: string;
+  person_id: string;
+  status: "invited" | "accepted" | "declined" | "expired";
+  responded_at: string | null;
 }
 
 export interface KioskDevice {
@@ -211,7 +279,9 @@ export interface TimeOffRequest {
   start_time: string | null;
   end_time: string | null;
   paid_hours: number | null;
+  /** Moved to time_off_reasons (private); always null now. */
   note: string | null;
+  leave_type_id: string | null;
   status: RequestStatus;
   manager_note: string | null;
   created_at: string;

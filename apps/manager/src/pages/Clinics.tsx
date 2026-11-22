@@ -1,4 +1,4 @@
-import { CoverageRules, PaySettings } from "./Coverage";
+import { CoverageRules, PaySettings, StaffingRatios } from "./Coverage";
 import { useEffect, useState } from "react";
 import { useSession } from "../session";
 import { friendly, type Strings } from "../i18n";
@@ -213,6 +213,7 @@ export function Clinics() {
                 </div>
               </dl>
               <CoverageRules locationId={l.id} />
+              <StaffingRatios locationId={l.id} />
               {managesLocation(l.id) && (
                 <div className="stack">
                   <strong>{t.wifi}</strong>

@@ -203,3 +203,13 @@ main { display: grid; gap: 16px; }
 td.changed { background: var(--accent-soft); font-weight: 600; }
 .warn-card { border-color: var(--warn); background: var(--warn-soft); }
 .error-text { color: var(--error); }
+
+/* Phase 2 */
+.tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 11px; line-height: 18px; background: var(--warn-soft); color: var(--warn); vertical-align: middle; }
+span.warn, li .warn, td .warn, .block.warn { color: var(--warn); }
+.notice-card { border-color: var(--ok); }
+.strong { font-weight: 600; }
+.stack-sm { display: flex; flex-direction: column; gap: 6px; }
+input.num { width: 64px; }
+table.overview td { vertical-align: top; min-width: 120px; }
+table.overview th[scope="row"] { white-space: nowrap; }

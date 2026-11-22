@@ -182,6 +182,8 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
         return `${who} : ${d.credential} expire le ${d.expiresOn}.`;
       case "position_mismatch":
         return `${who} : ce quart est pour un autre poste (${ctx.timeRange}).`;
+      case "staffing_ratio":
+        return `Ratio de personnel non respecté de ${d.from} à ${d.to}.`;
     }
   }
   switch (issue.code) {
@@ -217,5 +219,7 @@ export function issueMessage(issue: Issue, ctx: IssueContext, lang: Lang): strin
       return `${who}: ${d.credential} expires on ${d.expiresOn}.`;
     case "position_mismatch":
       return `${who}: this shift is for another position (${ctx.timeRange}).`;
+    case "staffing_ratio":
+      return `Staffing ratio not met from ${d.from} to ${d.to}.`;
   }
 }

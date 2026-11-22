@@ -5,7 +5,7 @@ import { Button, Card, Label, Muted, Result, Tag } from "../components/ui";
 import { fmtDay, fmtTime, weekStartOf } from "../format";
 import { useMyClinics, useSession } from "../session";
 import { fetchUpcomingShifts, loadPrefs, savePrefs, syncShifts } from "../shiftSync";
-import { type MySwap, type Shift, type SwapShift, supabase } from "../supabase";
+import { type MyOffer, type MySwap, type Shift, type SwapShift, supabase } from "../supabase";
 import { colors, space } from "../theme";
 
 export default function ScheduleScreen() {
@@ -21,13 +21,15 @@ export default function ScheduleScreen() {
   const [busy, setBusy] = useState<string | null>(null);
   const [openShifts, setOpenShifts] = useState<Shift[]>([]);
   const [myClaims, setMyClaims] = useState<{ shift_id: string; status: string }[]>([]);
+  const [offers, setOffers] = useState<MyOffer[]>([]);
+  const [offerMsg, setOfferMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = useCallback(async () => {
     setError("");
     try {
       const locIds = [...new Set(employments.flatMap((e) => e.employment_locations.map((x) => x.location_id)))];
       const none = Promise.resolve({ data: [] as unknown[] });
-      const [list, mine, prefs, open, weeks, claims] = await Promise.all([
+      const [list, mine, prefs, open, weeks, claims, offered] = await Promise.all([
         fetchUpcomingShifts(employments),
         supabase.rpc("my_swaps"),
         loadPrefs(),
@@ -36,7 +38,9 @@ export default function ScheduleScreen() {
           : none,
         locIds.length ? supabase.from("schedule_weeks").select("location_id, week_start").eq("status", "published").in("location_id", locIds) : none,
         supabase.from("shift_claims").select("shift_id, status"),
+        supabase.rpc("my_offers"),
       ]);
+      setOffers(((offered.data as MyOffer[]) ?? []).filter((o) => o.status === "invited" && o.offer_status === "open"));
       setShifts(list);
       setSwaps((mine.data as MySwap[]) ?? []);
       setCalendarOn(prefs.calendar);
@@ -55,6 +59,20 @@ export default function ScheduleScreen() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function answerOffer(offerId: string, accept: boolean) {
+    setBusy(offerId);
+    setOfferMsg(null);
+    const { data, error: err } = await supabase.rpc("respond_to_offer", { p_offer_id: offerId, p_accept: accept });
+    setBusy(null);
+    if (err) setOfferMsg({ ok: false, text: err.message });
+    else if (!data?.ok) setOfferMsg({ ok: false, text: t.offerErrors[data?.reason] ?? t.error });
+    else {
+      setOfferMsg({ ok: true, text: accept ? t.offerAccepted : t.offerDeclined });
+      if (accept) syncShifts({ employments, locations, t, lang }).catch(() => undefined);
+    }
+    await load();
+  }
 
   async function acknowledge(id: string) {
     setBusy(id);
@@ -150,6 +168,23 @@ export default function ScheduleScreen() {
         </Card>
       )}
       {calendarOn && calendarMsg?.ok && <Muted small>{calendarMsg.text}</Muted>}
+
+      {(offers.length > 0 || offerMsg) && (
+        <Card style={styles.incoming}>
+          <Label>{t.offeredShifts}</Label>
+          <Muted small>{t.offeredShiftsHint}</Muted>
+          {offers.map((o) => (
+            <View key={o.offer_id} style={styles.request}>
+              <Text style={styles.requestTitle}>{when(o.shift)}</Text>
+              <View style={styles.actions}>
+                <Button variant="primary" title={t.takeShift} busy={busy === o.offer_id} onPress={() => answerOffer(o.offer_id, true)} />
+                <Button title={t.notAvailable} onPress={() => answerOffer(o.offer_id, false)} />
+              </View>
+            </View>
+          ))}
+          {offerMsg && <Result ok={offerMsg.ok} title={offerMsg.text} />}
+        </Card>
+      )}
 
       {incoming.length > 0 && (
         <Card style={styles.incoming}>

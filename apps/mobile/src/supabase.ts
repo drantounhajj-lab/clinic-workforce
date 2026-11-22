@@ -73,6 +73,15 @@ export interface SwapShift {
   ends_at: string;
 }
 
+/** A shift offered to me (my_offers). The first to accept gets it. */
+export interface MyOffer {
+  offer_id: string;
+  status: "invited" | "accepted" | "declined" | "expired";
+  offer_status: "open" | "filled" | "cancelled";
+  shift: SwapShift & { unpaid_break_minutes: number };
+  location_name: string;
+}
+
 /** An exchange request as returned by my_swaps(). */
 export interface MySwap {
   id: string;

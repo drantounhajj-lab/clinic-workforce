@@ -87,15 +87,43 @@ export interface AvailabilityRuleInput {
   start: string; // "HH:MM"
   end: string; // "HH:MM"
   status: "pending" | "approved" | "rejected";
+  /** "available" (default): may work in this window. "unavailable": may not. */
+  kind?: "available" | "unavailable";
+  /** First and last day the rule applies ("YYYY-MM-DD"); open-ended when omitted. */
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
+  /** 2 = alternating weeks, counted from anchorWeek (a Monday). */
+  everyWeeks?: number;
+  anchorWeek?: string | null;
+  /** Clinics the rule applies to; all when omitted. */
+  locationIds?: string[] | null;
 }
 
 export interface AvailabilityExceptionInput {
   personId: string;
   date: string; // "YYYY-MM-DD"
-  /** Both omitted = unavailable all day. */
+  /** Last day of a range; same day when omitted. */
+  endDate?: string | null;
+  /** Both omitted = all day. */
   start?: string;
   end?: string;
   status: "pending" | "approved" | "rejected";
+  /** "unavailable" (default) or "available" (extra availability that day). */
+  kind?: "available" | "unavailable";
+  locationIds?: string[] | null;
+}
+
+/** Whenever at least triggerCount people of one position are on shift, at least requiredCount of another. */
+export interface StaffingRatioInput {
+  id: string;
+  locationId: string;
+  weekdays: number[];
+  start: string; // "HH:MM"
+  end: string; // "HH:MM" ("24:00" = end of day)
+  triggerJobRoleId: string;
+  triggerCount: number;
+  requiredJobRoleId: string;
+  requiredCount: number;
 }
 
 export interface CredentialInput {
@@ -121,6 +149,7 @@ export interface ValidationInput {
   timeOff?: TimeOffInput[];
   /** Minimum number of people per position at a clinic during a time window. */
   coverageRules?: CoverageRuleInput[];
+  staffingRatios?: StaffingRatioInput[];
   /** Days before expiry to start warning about a credential. Default 30. */
   credentialWarningDays?: number;
   /** Account setting: count hours across companies for overtime and rest. */
@@ -149,6 +178,7 @@ export type IssueCode =
   | "time_off"
   | "travel_time"
   | "coverage_gap"
+  | "staffing_ratio"
   | "credential_expiring"
   | "position_mismatch";
 
@@ -334,7 +364,7 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
     }
 
     // 4. Availability
-    if (!isWithinAvailability(s, e.personId, l.timezone, input)) {
+    if (!isWithinAvailability(s, e.personId, l.timezone, input, l.id)) {
       issues.push({
         code: "outside_availability",
         severity: "warning",
@@ -510,6 +540,73 @@ export function validateSchedule(input: ValidationInput): ValidationResult {
     }
   }
 
+  // 11. Staffing ratios: "whenever 2 podiatrists, at least 1 receptionist"
+  for (const rule of input.staffingRatios ?? []) {
+    const l = locations.get(rule.locationId);
+    if (!l) continue;
+    const positionOf = (s: ShiftInput & { employmentId: string }) => s.jobRoleId ?? emp(s.employmentId).jobRoleId ?? null;
+    const here = assigned.filter((s) => s.locationId === rule.locationId);
+    const of = (jobRoleId: string): Interval[] => here.filter((s) => positionOf(s) === jobRoleId).map((s) => [s.startsAt.getTime(), s.endsAt.getTime()]);
+    const trigger = of(rule.triggerJobRoleId);
+    const required = of(rule.requiredJobRoleId);
+    if (trigger.length < rule.triggerCount) continue;
+    for (const week of weeks) {
+      for (let d = 0; d < 7; d++) {
+        const date = addDays(week, d);
+        if (!rule.weekdays.includes(weekdayOf(date))) continue;
+        const from = zonedToUtc(date, rule.start, l.timezone).getTime();
+        const to = rule.end === "24:00" ? zonedToUtc(addDays(date, 1), "00:00", l.timezone).getTime() : zonedToUtc(date, rule.end, l.timezone).getTime();
+        // Split the window at every start and end, then check each piece.
+        const points = new Set<number>([from, to]);
+        for (const [a, b] of [...trigger, ...required]) {
+          if (a > from && a < to) points.add(a);
+          if (b > from && b < to) points.add(b);
+        }
+        const sorted = [...points].sort((x, y) => x - y);
+        let open: { a: number; b: number; have: number; triggered: number } | null = null;
+        const flush = () => {
+          if (!open) return;
+          issues.push({
+            code: "staffing_ratio",
+            severity: "warning",
+            shiftIds: [],
+            week,
+            details: {
+              locationId: rule.locationId,
+              ruleId: rule.id,
+              date,
+              from: hhmm(new Date(open.a), l.timezone),
+              to: hhmm(new Date(open.b), l.timezone),
+              triggerJobRoleId: rule.triggerJobRoleId,
+              triggerScheduled: open.triggered,
+              requiredJobRoleId: rule.requiredJobRoleId,
+              needed: rule.requiredCount,
+              scheduled: open.have,
+            },
+          });
+          open = null;
+        };
+        for (let i = 0; i + 1 < sorted.length; i++) {
+          const a = sorted[i];
+          const b = sorted[i + 1];
+          const t = trigger.filter(([x, y]) => x <= a && y >= b).length;
+          const have = required.filter(([x, y]) => x <= a && y >= b).length;
+          if (t >= rule.triggerCount && have < rule.requiredCount) {
+            if (open && open.b === a) {
+              open.b = b;
+              open.have = Math.min(open.have, have);
+              open.triggered = Math.max(open.triggered, t);
+            } else {
+              flush();
+              open = { a, b, have, triggered: t };
+            }
+          } else flush();
+        }
+        flush();
+      }
+    }
+  }
+
   return { issues, hours, publishable: !issues.some((i) => i.severity === "error") };
 }
 
@@ -566,23 +663,44 @@ function overlapsTimeOff(s: ShiftInput, t: TimeOffInput, timezone: string): bool
  * person's approved recurring windows and no approved exception blocks it.
  * A person with no approved recurring windows is treated as always available.
  */
-function isWithinAvailability(s: ShiftInput, personId: string, timezone: string, input: ValidationInput): boolean {
+function isWithinAvailability(s: ShiftInput, personId: string, timezone: string, input: ValidationInput, locationId: string): boolean {
+  const atClinic = (ids?: string[] | null) => !ids || ids.length === 0 || ids.includes(locationId);
   const rules = (input.availabilityRules ?? []).filter((r) => r.personId === personId && r.status === "approved");
   const exceptions = (input.availabilityExceptions ?? []).filter((x) => x.personId === personId && x.status === "approved");
+  const inEffect = (r: AvailabilityRuleInput, date: string) =>
+    (!r.effectiveFrom || r.effectiveFrom <= date) && (!r.effectiveTo || r.effectiveTo >= date);
+  const weekMatches = (r: AvailabilityRuleInput, date: string) => {
+    const every = r.everyWeeks ?? 1;
+    if (every <= 1) return true;
+    const anchor = r.anchorWeek ?? r.effectiveFrom ?? date;
+    const weeksApart = Math.round((Date.parse(`${mondayOf(date)}T12:00:00Z`) - Date.parse(`${mondayOf(anchor)}T12:00:00Z`)) / (7 * 86_400_000));
+    return ((weeksApart % every) + every) % every === 0;
+  };
 
   for (const [date, startMin, endMin] of splitByLocalDay(s, timezone)) {
-    const dayExceptions = exceptions.filter((x) => x.date === date);
-    for (const x of dayExceptions) {
-      if (!x.start || !x.end) return false;
-      if (startMin < parseTime(x.end) && endMin > parseTime(x.start)) return false;
-    }
-    if (rules.length === 0) continue;
-    const windows: Interval[] = rules
-      .filter((r) => r.weekday === weekdayOf(date))
-      .map((r) => [parseTime(r.start), parseTime(r.end)]);
+    const today = exceptions.filter((x) => x.date <= date && (x.endDate ?? x.date) >= date && atClinic(x.locationIds));
+    const window = (x: { start?: string; end?: string }): Interval => [x.start ? parseTime(x.start) : 0, x.end ? parseTime(x.end) : 24 * 60];
+    const overlaps = ([a, b]: Interval) => startMin < b && endMin > a;
+    // One-off "unavailable" always wins.
+    if (today.some((x) => (x.kind ?? "unavailable") === "unavailable" && overlaps(window(x)))) return false;
+    const rulesNow = rules.filter((r) => inEffect(r, date));
+    const todays = rulesNow.filter((r) => r.weekday === weekdayOf(date) && weekMatches(r, date));
+    // Weekly "unavailable" for this clinic and time
+    if (todays.some((r) => r.kind === "unavailable" && atClinic(r.locationIds) && overlaps([parseTime(r.start), parseTime(r.end)]))) return false;
+    // No weekly availability in effect: anything not excluded is fine.
+    const availablePattern = rulesNow.filter((r) => (r.kind ?? "available") === "available");
+    if (availablePattern.length === 0) continue;
+    const windows: Interval[] = [
+      ...todays.filter((r) => (r.kind ?? "available") === "available" && atClinic(r.locationIds)).map((r): Interval => [parseTime(r.start), parseTime(r.end)]),
+      ...today.filter((x) => x.kind === "available").map(window),
+    ];
     if (!isCovered(startMin, endMin, windows)) return false;
   }
   return true;
+}
+
+function mondayOf(date: string): string {
+  return addDays(date, -weekdayOf(date));
 }
 
 /** Split a shift into [localDate, startMinute, endMinute] pieces, one per local day. */
