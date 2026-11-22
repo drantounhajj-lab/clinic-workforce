@@ -991,3 +991,238 @@ describe("phase 1: changed shifts, copy week, cross-company privacy", () => {
     expect(overlap?.shiftIds.sort()).toEqual(["new", g].sort());
   });
 });
+
+describe("phase 2: availability, leave, coverage, templates, acknowledgements", () => {
+  let mia: TestUser; // clinic manager, Aylmer
+  let sam: TestUser; // schedule-only role at Aylmer
+  let ava: TestUser; // assistant, Aylmer
+  let bea: TestUser; // assistant, Aylmer
+  let cal: TestUser; // assistant, Aylmer
+  const e: Record<string, string> = {};
+  const p: Record<string, string> = {};
+  const r: Record<string, string> = {};
+  const weekN = (n: number) => {
+    const d = new Date(`${thisMonday()}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 7 * n);
+    return d.toISOString().slice(0, 10);
+  };
+  const W = () => weekN(12);
+  // Local Gatineau/Aylmer time (EST in these test weeks is not guaranteed, so use the database to convert)
+  const local = async (date: string, time: string) =>
+    (await db.admin<{ t: string }>("select (($1::date + $2::time) at time zone 'America/Toronto')::text as t", [date, time]))[0].t;
+  const dayOf = (week: string, d: number) => {
+    const x = new Date(`${week}T12:00:00Z`);
+    x.setUTCDate(x.getUTCDate() + d);
+    return x.toISOString().slice(0, 10);
+  };
+  const shiftAt = async (emp: string | null, week: string, d: number, from: string, to: string, role: string | null = null) =>
+    (
+      await db.as<{ id: string }>(
+        mia,
+        "insert into public.shifts (location_id, week_start, employment_id, starts_at, ends_at, job_role_id) values ($1, $2, $3, $4, $5, $6) returning id",
+        [ids.ayl, week, emp, await local(dayOf(week, d), from), await local(dayOf(week, to <= from ? d + 1 : d), to), role],
+      )
+    )[0].id;
+  const notesFor = (person: string, title: string) =>
+    db.admin<{ body: string }>("select body from app.notifications where person_id = $1 and title = $2 order by created_at", [person, title]);
+
+  beforeAll(async () => {
+    const [ayl] = await db.as<{ id: string }>(tony, "insert into public.locations (company_id, name, province) values ($1, 'Aylmer', 'QC') returning id", [ids.coQc]);
+    ids.ayl = ayl.id;
+    const [asst] = await db.as<{ id: string }>(tony, "insert into public.job_roles (name_fr, name_en) values ('Assistante', 'Assistant') returning id");
+    r.asst = asst.id;
+    r.rec = (await db.as<{ id: string }>(tony, "select id from public.job_roles where name_fr = 'Réceptionniste'"))[0].id;
+    const people = await db.as<{ id: string; email: string }>(
+      tony,
+      `insert into public.persons (first_name, last_name, email) values
+         ('Mia', 'Roy', 'mia@example.com'), ('Sam', 'Roy', 'sam@example.com'), ('Ava', 'Roy', 'ava@example.com'),
+         ('Bea', 'Roy', 'bea@example.com'), ('Cal', 'Roy', 'cal@example.com'), ('Dan', 'Roy', 'dan@example.com')
+       returning id, email`,
+    );
+    for (const x of people) p[x.email.split("@")[0]] = x.id;
+    await db.as(tony, "insert into public.role_assignments (person_id, role, location_id) values ($1, 'clinic_manager', $2)", [p.mia, ids.ayl]);
+    const [role] = await db.as<{ id: string }>(tony, "insert into public.custom_roles (company_id, name, permissions) values ($1, 'Horaires Aylmer', '{schedule}') returning id", [ids.coQc]);
+    await db.as(tony, "insert into public.custom_role_assignments (person_id, custom_role_id, location_id) values ($1, $2, $3)", [p.sam, role.id, ids.ayl]);
+    for (const [who, jr] of [["ava", r.asst], ["bea", r.asst], ["cal", r.asst], ["dan", r.rec]] as const) {
+      const [emp] = await db.as<{ id: string }>(tony, "insert into public.employments (person_id, company_id, job_role_id) values ($1, $2, $3) returning id", [p[who], ids.coQc, jr]);
+      await db.as(tony, "insert into public.employment_locations (employment_id, location_id) values ($1, $2)", [emp.id, ids.ayl]);
+      e[who] = emp.id;
+    }
+    mia = await db.createUser("mia@example.com");
+    sam = await db.createUser("sam@example.com");
+    ava = await db.createUser("ava@example.com");
+    bea = await db.createUser("bea@example.com");
+    cal = await db.createUser("cal@example.com");
+    await db.as(mia, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.ayl, W()]);
+  });
+
+  it("acceptance 1: Friday afternoon off → gap, approval frees the shift, two accept at once, one gets it", async () => {
+    const friday = await shiftAt(e.ava, W(), 4, "13:00", "17:00", null);
+    await shiftAt(e.bea, W(), 4, "08:00", "12:00");
+    await shiftAt(e.cal, W(), 3, "13:00", "17:00");
+    const types = await db.as<{ id: string; name_fr: string }>(ava, "select id, name_fr from public.leave_types where active order by sort");
+    expect(types.map((x) => x.name_fr)).toEqual(["Vacances", "Maladie", "Personnel", "Sans solde", "Autre"]);
+    const personal = types.find((x) => x.name_fr === "Personnel")!.id;
+
+    const req = await db.rpc<{ ok: boolean; id: string }>(ava, "request_leave", [personal, dayOf(W(), 4), dayOf(W(), 4), "12:30", "17:00", "Rendez-vous médical"]);
+    expect(req.ok).toBe(true);
+    expect(await db.rpc(ava, "request_leave", [personal, dayOf(W(), 4), dayOf(W(), 4), "14:00", "15:00", null])).toMatchObject({ ok: false, reason: "overlaps" });
+
+    // The reason: Ava and her manager; not the schedule-only role, not a colleague
+    expect(await db.as(ava, "select reason from public.time_off_reasons where request_id = $1", [req.id])).toEqual([{ reason: "Rendez-vous médical" }]);
+    expect(await db.as(mia, "select reason from public.time_off_reasons where request_id = $1", [req.id])).toHaveLength(1);
+    expect(await db.as(sam, "select reason from public.time_off_reasons where request_id = $1", [req.id])).toHaveLength(0);
+    expect(await db.as(bea, "select reason from public.time_off_reasons where request_id = $1", [req.id])).toHaveLength(0);
+    expect((await db.as<{ note: string | null }>(sam, "select note from public.time_off_requests where id = $1", [req.id]))[0].note).toBeNull();
+
+    // Before deciding: the shifts concerned
+    const impact = await db.rpc<{ ok: boolean; shifts: { id: string; can_schedule: boolean }[] }>(mia, "time_off_impact", [req.id]);
+    expect(impact.shifts).toEqual([expect.objectContaining({ id: friday, can_schedule: true })]);
+
+    const decided = await db.rpc<{ ok: boolean; released: string[] }>(mia, "decide_leave", [req.id, true, 4.5, "OK, bon rendez-vous", true]);
+    expect(decided).toEqual({ ok: true, released: [friday] });
+    expect((await db.admin<{ employment_id: string | null; job_role_id: string }>("select employment_id, job_role_id from public.shifts where id = $1", [friday]))[0])
+      .toEqual({ employment_id: null, job_role_id: r.asst });
+    expect((await notesFor(p.ava, "Congé approuvé")).length).toBe(1);
+    expect((await notesFor(p.ava, "Quart retiré")).length).toBe(1);
+
+    // Offer to everyone eligible: the other assistants; not the receptionist, not Ava (on leave)
+    const offer = await db.rpc<{ ok: boolean; offer_id: string; invited: number; skipped: { employment_id: string; reason: string }[] }>(mia, "offer_shift", [friday, null]);
+    expect(offer.invited).toBe(2);
+    expect(Object.fromEntries(offer.skipped.map((x) => [x.employment_id, x.reason]))).toEqual({ [e.dan]: "wrong_position", [e.ava]: "time_off" });
+    expect((await notesFor(p.bea, "Quart offert")).length).toBe(1);
+    expect(await db.rpc(sam, "offer_shift", [friday, null])).toMatchObject({ ok: true, invited: 0 }); // already invited
+    const mine = await db.rpc<{ offer_id: string; status: string }[]>(bea, "my_offers");
+    expect(mine).toEqual([expect.objectContaining({ offer_id: offer.offer_id, status: "invited" })]);
+
+    const before = { bea: (await notesFor(p.bea, "Nouveau quart")).length, cal: (await notesFor(p.cal, "Nouveau quart")).length };
+    // Both accept at the same moment
+    const [a, b] = await Promise.all([
+      db.rpcConcurrent<{ ok: boolean; reason?: string }>(bea, "respond_to_offer", [offer.offer_id, true]),
+      db.rpcConcurrent<{ ok: boolean; reason?: string }>(cal, "respond_to_offer", [offer.offer_id, true]),
+    ]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    expect([a, b].find((x) => !x.ok)?.reason).toBe("taken");
+    const winner = a.ok ? "bea" : "cal";
+    const user = (who: string) => (who === "bea" ? bea : cal);
+    const loser = a.ok ? "cal" : "bea";
+    expect((await db.admin<{ employment_id: string; response: string }>("select employment_id, response from public.shifts where id = $1", [friday]))[0])
+      .toEqual({ employment_id: e[winner], response: "confirmed" });
+    expect((await db.admin<{ status: string }>("select status from public.coverage_offers where id = $1", [offer.offer_id]))[0].status).toBe("filled");
+    expect((await notesFor(p[winner], "Nouveau quart")).length).toBe(before[winner] + 1);
+    expect((await notesFor(p[loser], "Nouveau quart")).length).toBe(before[loser]);
+    expect((await notesFor(p[loser], "Quart déjà pourvu")).length).toBe(1);
+    expect((await notesFor(p.mia, "Remplacement trouvé")).length).toBe(1);
+    expect(await db.rpc(user(loser), "respond_to_offer", [offer.offer_id, true])).toMatchObject({ ok: false, reason: "taken" });
+  });
+
+  it("an open shift assigned by the manager closes its offer and tells the people invited", async () => {
+    const open = await shiftAt(null, W(), 2, "09:00", "12:00", r.asst);
+    const offer = await db.rpc<{ offer_id: string; invited: number }>(mia, "offer_shift", [open, [e.bea, e.cal, e.dan]]);
+    expect(offer.invited).toBe(2);
+    expect(await db.rpc(mia, "assign_open_shift", [open, e.ava])).toMatchObject({ ok: true });
+    expect((await db.admin<{ status: string }>("select status from public.coverage_offers where id = $1", [offer.offer_id]))[0].status).toBe("filled");
+    expect((await notesFor(p.cal, "Quart déjà pourvu")).length).toBeGreaterThan(0);
+    expect(await db.rpc(bea, "respond_to_offer", [offer.offer_id, true])).toMatchObject({ ok: false, reason: "taken" });
+  });
+
+  it("a new weekly availability replaces the approved one from its start date, keeping the old one", async () => {
+    await db.as(ava, "insert into public.availability_rules (person_id, weekday, start_time, end_time, effective_from) values ($1, 0, '08:00', '16:00', '2027-01-04')", [p.ava]);
+    await db.rpc(mia, "decide_availability", [p.ava, true]);
+    await db.as(
+      ava,
+      "insert into public.availability_rules (person_id, weekday, start_time, end_time, effective_from, every_weeks, anchor_week, location_ids, kind) values ($1, 1, '09:00', '17:00', '2027-02-01', 2, '2027-02-01', $2, 'available'), ($1, 2, '00:00', '23:59', '2027-02-01', 1, null, null, 'unavailable')",
+      [p.ava, [ids.ayl]],
+    );
+    await expect(
+      db.as(ava, "insert into public.availability_rules (person_id, weekday, start_time, end_time, location_ids) values ($1, 3, '09:00', '17:00', $2)", [p.ava, [ids.ott]]),
+    ).rejects.toThrow(/not one of this person/);
+    expect(await db.rpc(mia, "decide_availability", [p.ava, true])).toMatchObject({ ok: true });
+    const rows = await db.admin<{ weekday: number; effective_from: string; effective_to: string | null; status: string }>(
+      "select weekday, effective_from::text, effective_to::text, status from public.availability_rules where person_id = $1 order by weekday",
+      [p.ava],
+    );
+    expect(rows).toEqual([
+      { weekday: 0, effective_from: "2027-01-04", effective_to: "2027-01-31", status: "approved" },
+      { weekday: 1, effective_from: "2027-02-01", effective_to: null, status: "approved" },
+      { weekday: 2, effective_from: "2027-02-01", effective_to: null, status: "approved" },
+    ]);
+    // One-off unavailability, decided separately
+    const [x] = await db.as<{ id: string }>(ava, "insert into public.availability_exceptions (person_id, date, end_date, kind) values ($1, '2027-03-01', '2027-03-03', 'unavailable') returning id", [p.ava]);
+    expect(await db.rpc(bea, "decide_availability_exception", [x.id, true])).toMatchObject({ ok: false });
+    expect(await db.rpc(sam, "decide_availability_exception", [x.id, true])).toMatchObject({ ok: true });
+  });
+
+  it("templates and rotations: save weeks, apply them, repeat safely; someone who left becomes an open shift", async () => {
+    const A = weekN(14);
+    const B = weekN(15);
+    await db.as(mia, "insert into public.schedule_weeks (location_id, week_start) values ($1, $2), ($1, $3)", [ids.ayl, A, B]);
+    await shiftAt(e.bea, A, 0, "08:00", "16:00");
+    await shiftAt(e.cal, B, 0, "08:00", "16:00");
+    await shiftAt(null, A, 1, "22:00", "06:00", r.asst); // overnight open shift
+    const saved = await db.rpc<{ ok: boolean; id: string; shifts: number }>(mia, "save_template", [ids.ayl, "Rotation A/B", A, 2]);
+    expect(saved).toMatchObject({ ok: true, shifts: 3 });
+    expect(await db.rpc(bea, "save_template", [ids.ayl, "X", A, 1])).toMatchObject({ ok: false, reason: "not_allowed" });
+
+    const from = weekN(20);
+    const applied = await db.rpc<{ added: number }>(mia, "apply_template", [saved.id, from, 4, A]);
+    expect(applied.added).toBe(6); // weeks A, B, A, B
+    expect(await db.rpc(mia, "apply_template", [saved.id, from, 4, A])).toMatchObject({ added: 0 });
+    const monday = await db.admin<{ who: string | null }>(
+      "select e.person_id::text as who from public.shifts s left join public.employments e on e.id = s.employment_id where s.location_id = $1 and s.week_start = any ($2::date[]) and extract(isodow from s.starts_at at time zone 'America/Toronto') = 1 order by s.week_start",
+      [ids.ayl, [from, weekN(21), weekN(22), weekN(23)]],
+    );
+    expect(monday.map((x) => x.who)).toEqual([p.bea, p.cal, p.bea, p.cal]);
+    const overnight = await db.admin<{ s: string; e: string }>(
+      "select to_char(starts_at at time zone 'America/Toronto', 'HH24:MI') as s, to_char(ends_at at time zone 'America/Toronto', 'YYYY-MM-DD HH24:MI') as e from public.shifts where location_id = $1 and week_start = $2 and employment_id is null",
+      [ids.ayl, from],
+    );
+    expect(overnight).toEqual([{ s: "22:00", e: `${dayOf(from, 2)} 06:00` }]);
+
+    // Cal leaves: next time the rotation is applied, his shift is added as an open assistant shift
+    await db.as(tony, "update public.employments set end_date = current_date where id = $1", [e.cal]);
+    await db.rpc(mia, "apply_template", [saved.id, weekN(25), 1, A]); // week index 1 → week B
+    const later = await db.admin<{ employment_id: string | null; job_role_id: string | null }>(
+      "select employment_id, job_role_id from public.shifts where location_id = $1 and week_start = $2",
+      [ids.ayl, weekN(25)],
+    );
+    expect(later).toEqual([{ employment_id: null, job_role_id: r.asst }]);
+    await db.as(tony, "update public.employments set end_date = null where id = $1", [e.cal]);
+  });
+
+  it("recurring shifts: every week until a date, safe to repeat", async () => {
+    const start = dayOf(weekN(30), 2);
+    const until = dayOf(weekN(33), 2);
+    const args = [ids.ayl, e.dan, null, start, "09:00", "13:00", 0, 1, until];
+    expect(await db.rpc(mia, "create_recurring_shifts", args)).toMatchObject({ ok: true, added: 4 });
+    expect(await db.rpc(mia, "create_recurring_shifts", args)).toMatchObject({ ok: true, added: 0 });
+    // every 2 weeks to week 40: weeks 30 and 32 exist already, 34–40 are added
+    expect(await db.rpc(mia, "create_recurring_shifts", [ids.ayl, e.dan, null, start, "09:00", "13:00", 0, 2, dayOf(weekN(40), 2)])).toMatchObject({ added: 4 });
+    expect(await db.rpc(mia, "create_recurring_shifts", [ids.ott, e.dan, null, start, "09:00", "13:00", 0, 1, until])).toMatchObject({ ok: false, reason: "not_allowed" });
+  });
+
+  it("schedulers see shifts not yet acknowledged and can remind, at most once an hour; acknowledging isn't a change", async () => {
+    const soon = weekN(2);
+    await db.as(mia, "insert into public.schedule_weeks (location_id, week_start, status, published_at) values ($1, $2, 'published', now())", [ids.ayl, soon]);
+    const s = await shiftAt(e.dan, soon, 1, "09:00", "12:00");
+    const list = await db.rpc<{ id: string }[]>(mia, "unacknowledged_shifts");
+    expect(list.map((x) => x.id)).toContain(s);
+    expect((await db.rpc<{ id: string }[]>(julie, "unacknowledged_shifts")).map((x) => x.id)).not.toContain(s);
+    expect(await db.rpc(mia, "remind_unacknowledged", [[s]])).toEqual({ ok: true, reminded: 1 });
+    expect(await db.rpc(mia, "remind_unacknowledged", [[s]])).toEqual({ ok: true, reminded: 0 });
+    expect((await notesFor(p.dan, "Quart à confirmer")).length).toBe(1);
+    const before = (await db.admin<{ u: string }>("select updated_at::text as u from public.shifts where id = $1", [s]))[0].u;
+    await db.as(tony, "insert into public.persons (first_name, last_name, email) values ('X', 'Y', 'dan-login@example.com')").catch(() => undefined);
+    const dan = await db.createUser("dan@example.com");
+    expect(await db.rpc(dan, "respond_to_shift", [s, "confirmed"])).toMatchObject({ ok: true });
+    expect((await db.admin<{ u: string }>("select updated_at::text as u from public.shifts where id = $1", [s]))[0].u).toBe(before);
+    expect((await db.rpc<{ id: string }[]>(mia, "unacknowledged_shifts")).map((x) => x.id)).not.toContain(s);
+  });
+
+  it("staffing ratios: schedulers of the clinic only", async () => {
+    const ins = "insert into public.staffing_ratio_rules (location_id, trigger_job_role_id, trigger_count, required_job_role_id, required_count) values ($1, $2, 2, $3, 1)";
+    await db.as(sam, ins, [ids.ayl, r.asst, r.rec]);
+    await expect(db.as(julie, ins, [ids.ayl, r.asst, r.rec])).rejects.toThrow(/row-level security/);
+    expect(await db.as(bea, "select id from public.staffing_ratio_rules where location_id = $1", [ids.ayl])).toHaveLength(1);
+  });
+});
